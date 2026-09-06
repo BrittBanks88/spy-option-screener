@@ -33,9 +33,13 @@ def _flatten(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_intraday(interval="1h", refresh=False, period=None) -> pd.DataFrame:
+def load_intraday(interval="1h", refresh=False, period=None,
+                  live_today=False) -> pd.DataFrame:
     """Cached intraday SPY bars, ET, regular hours. Columns: Open/High/Low/
     Close/Volume plus ``date`` (session date) and ``minute`` (minutes since 9:30).
+
+    ``live_today``: if a POLYGON_API_KEY is set, swap today's rows for real-time
+    Polygon bars (yfinance intraday is ~15 min delayed).
     """
     period = period or _PERIOD.get(interval, "60d")
     cache = CACHE_DIR / f"SPY_{interval}.parquet"
@@ -55,7 +59,27 @@ def load_intraday(interval="1h", refresh=False, period=None) -> pd.DataFrame:
     df = df[(df.index.time >= RTH_OPEN) & (df.index.time < RTH_CLOSE)].copy()
     df["date"] = df.index.date
     df["minute"] = (df.index.hour - 9) * 60 + df.index.minute - 30
+
+    if live_today:
+        df = _append_live_today(df, interval)
     return df
+
+
+def _append_live_today(df: pd.DataFrame, interval: str) -> pd.DataFrame:
+    """Replace today's (delayed/absent) rows with real-time Polygon bars."""
+    from . import polygon as poly
+    if not poly.available():
+        return df
+    try:
+        fresh = poly.intraday_bars(interval if interval in
+                                   ("1m", "5m", "15m", "30m", "1h") else "30m")
+    except Exception:      # noqa: BLE001
+        return df
+    if fresh.empty:
+        return df
+    today = fresh["date"].iloc[0]
+    df = df[df["date"] != today]
+    return pd.concat([df, fresh]).sort_index()
 
 
 def _price_at_or_after(day: pd.DataFrame, hhmm: str) -> float:
@@ -147,10 +171,10 @@ def _prev_session(daily: pd.DataFrame, date) -> object:
         return prior[-1] if prior else date
 
 
-def latest_session(interval="30m", refresh=False):
+def latest_session(interval="30m", refresh=False, live_today=False):
     """(date, day_bars) for the most recent session with data. Used by the
     'today's pick' surface when run outside market hours.
     """
-    df = load_intraday(interval, refresh=refresh)
+    df = load_intraday(interval, refresh=refresh, live_today=live_today)
     last_date = df["date"].max()
     return last_date, df[df["date"] == last_date].sort_index()

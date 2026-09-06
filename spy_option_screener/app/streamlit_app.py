@@ -83,14 +83,21 @@ def fmt_money(x):
     return "–" if x is None or not np.isfinite(x) else f"${x:,.0f}"
 
 
+from spy_option_screener.data import polygon as _poly
+
 # ── sidebar (advanced knobs, hidden from the main flow) ─────────────────────
 with st.sidebar:
     st.header("Settings")
+    _srcs = ["Reconstructed from VIX", "Live (yfinance, delayed)"]
+    if _poly.available():
+        _srcs.insert(0, "Polygon (real-time)")
     chain_src = st.radio(
-        "Chain data", ["Reconstructed from VIX", "Live (yfinance, delayed)"],
-        help="Reconstructed always works and matches the backtest engine. "
-             "Live pulls the real chain but yfinance quotes are unreliable "
-             "outside market hours / near 0-DTE.")
+        "Chain data", _srcs, index=0,
+        help="Polygon = real option chain with Greeks (needs POLYGON_API_KEY). "
+             "Reconstructed always works and matches the backtest engine. "
+             "yfinance quotes are unreliable outside market hours / near 0-DTE.")
+    if not _poly.available():
+        st.caption("💡 set `POLYGON_API_KEY` in `.env` for real-time chains")
     hist_start = st.selectbox("History window", ["2018-01-01", "2015-01-01",
                               "2012-01-01", "2020-01-01"], index=0)
     rv_note = st.empty()
@@ -310,7 +317,15 @@ with tab_chain:
 
     # ── build + score the chain ──────────────────────────────────────────
     try:
-        if chain_src.startswith("Live"):
+        if chain_src.startswith("Polygon"):
+            raw = _poly.option_chain(exp_date, strike_band=strike_band + 0.01)
+            chain = chain_mod.prep_polygon_chain(raw)
+            spot = float(chain.attrs["spot"])
+            age = chain.attrs.get("quote_age_seconds")
+            if age is not None:
+                st.caption(f"📡 Polygon quote age: {age:.0f}s"
+                           + ("  ⚠️ looks delayed (>2 min)" if age > 120 else ""))
+        elif chain_src.startswith("Live"):
             raw, spot = get_live_chain(max(dte + 1, 2))
             chain = chain_mod.enrich_live_chain(raw, fallback_vix=vix_now)
             want = min(chain["dte"].unique(), key=lambda x: abs(x - dte))

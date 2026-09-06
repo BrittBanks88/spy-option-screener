@@ -90,6 +90,7 @@ class TradePlan:
     time_stop: str = ""
     manage_date: str = ""         # "Wed Aug 26" or "Thu Aug 27 (same day)"
     overnight: str = ""           # overnight-carry assessment line
+    data_source: str = "reconstructed"   # "polygon" | "reconstructed"
     caveat: str = ("Reconstructed vol surface (±10–20%). The pullback signal is the "
                    "best-behaved in backtests but still only ~breakeven on a ~2-yr "
                    "sample. Size small. Not investment advice.")
@@ -103,7 +104,9 @@ class TradePlan:
         s = "CALL" if self.direction > 0 else "PUT"
         arrow = "above" if self.direction > 0 else "below"
         turn = "turning up" if self.direction > 0 else "rolling over"
-        tag = "🟢 live" if self.live else "🔒 reconstructed — confirm at the open"
+        src = "📡 live Polygon chain" if self.data_source == "polygon" \
+            else "🔒 reconstructed chain"
+        tag = f"🟢 live · {src}" if self.live else f"{src} — confirm at the open"
         est = " _(est.)_" if self.u_entry_estimated else ""
         return "\n".join([
             f"*SPY Pullback → Continuation  |  {s}*   _{tag}_",
@@ -202,7 +205,9 @@ class TradePlan:
             + self._simple_body()
             + f"\n\n_why: {self._why_short()} · payoff about "
             f"{self.reward_risk:.1f} to 1_\n"
-            "_🔒 reconstructed price · not financial advice_"
+            + ("_📡 live price · not financial advice_"
+               if self.data_source == "polygon"
+               else "_🔒 reconstructed price · not financial advice_")
         )
 
     def slack_simple_blocks(self) -> list[dict]:
@@ -257,9 +262,9 @@ def build_plan(entry_time="10:00", interval="1h", buy_zone=(0.35, 0.60),
     """Plan for the latest session, or for ``for_date`` (must have intraday bars)."""
     daily = loader.load_history(start=hist_start, refresh=refresh)
     daily.index = pd.DatetimeIndex(daily.index)
-    bars = it.load_intraday(interval, refresh=refresh)
+    bars = it.load_intraday(interval, refresh=refresh, live_today=(for_date is None))
     session_date = (pd.Timestamp(for_date).date() if for_date is not None
-                    else it.latest_session(interval, refresh=False)[0])
+                    else it.latest_session(interval, live_today=True)[0])
     live, _next, wall_note = _market_ctx(session_date)
     asof = dt.datetime.now(ET).strftime("%Y-%m-%d %H:%M %Z")
 
@@ -312,8 +317,15 @@ def build_plan(entry_time="10:00", interval="1h", buy_zone=(0.35, 0.60),
 
     # --- contract -----------------------------------------------------
     exp_date, dte = mcal.next_weekly_expiry(entry_date, min_dte=3, max_dte=9)
-    chain = chain_mod.synthetic_chain(u_entry, vix, dte,
-                                      vix_baseline=float(dsig_daily["vix"].tail(40).mean()))
+    chain = chain_mod.get_chain(
+        u_entry, vix, dte, vix_baseline=float(dsig_daily["vix"].tail(40).mean()),
+        min_dte=3, max_dte=9,
+        prefer_live=(for_date is None))     # back-checks stay on the reconstruction
+    live_chain = chain.attrs.get("source") == "polygon"
+    if live_chain and len(chain):
+        exp_date = pd.Timestamp(chain["expiry"].iloc[0]).date()
+        dte = int(chain["dte"].iloc[0])
+        u_entry = float(chain.attrs.get("spot", u_entry))
     scored = score_mod.score_chain(chain, pdir, u_entry, rv, confidence=1.0)
     lo, hi = buy_zone
     band = scored[scored["delta"].abs().between(lo, hi)]
@@ -372,8 +384,8 @@ def build_plan(entry_time="10:00", interval="1h", buy_zone=(0.35, 0.60),
         delta=float(c["delta"]), iv=iv, theta=float(c["theta"]),
         breakeven=float(c["breakeven"]), pop=float(c["chance_of_profit"]),
         score=float(c["score"]),
-        u_entry=u_entry, u_entry_estimated=u_entry_est, u_stop=u_stop,
-        u_t1=u_t1, u_run=u_run, entry_hold_level=hold_level,
+        u_entry=u_entry, u_entry_estimated=(u_entry_est and not live_chain),
+        u_stop=u_stop, u_t1=u_t1, u_run=u_run, entry_hold_level=hold_level,
         entry_quality=entry_quality,
         entry_window=("enter now if it's holding the level" if live
                       else f"~{entry_time}–10:30 ET on {entry_date:%a %b %d}"),
@@ -383,4 +395,11 @@ def build_plan(entry_time="10:00", interval="1h", buy_zone=(0.35, 0.60),
         max_loss=o_entry * 100.0, reward_risk=reward_risk, time_stop=time_stop,
         manage_date=manage_date,
         overnight=overnight_mod.assess(dsig_daily, session_date, pdir).line(pdir),
+        data_source="polygon" if live_chain else "reconstructed",
+        caveat=("Live Polygon option chain. The pullback signal is the best-"
+                "behaved in backtests but still only ~breakeven on a ~2-yr "
+                "sample. Size small. Not investment advice." if live_chain else
+                "Reconstructed vol surface (±10–20%). The pullback signal is the "
+                "best-behaved in backtests but still only ~breakeven on a ~2-yr "
+                "sample. Size small. Not investment advice."),
     )

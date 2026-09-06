@@ -41,6 +41,26 @@ python run_backtest.py --strategy combo --entry-time 10:00 --start 2018-01-01
 First run downloads ~15 years of SPY + VIX daily bars from yfinance and caches
 them to `cache/`. After that it works offline.
 
+## Real-time data (optional)
+
+By default everything runs on **yfinance** (free): the SPY underlying quote is
+near-live, but intraday bars and the option chain are ~15 min delayed, so the
+chain is *reconstructed from VIX* (±10–20% on premium).
+
+Set a **Polygon.io** key for real option chains with real Greeks:
+
+```bash
+echo 'POLYGON_API_KEY=your_key' >> .env
+```
+
+When the key is present, `trade_plan` / `daily_pick` / the "Today's Pick" and
+"Trade Plan" outputs (and a "Polygon (real-time)" option in the dashboard's
+Chain-data selector) switch to the live snapshot automatically during market
+hours, and fall back to the reconstruction when the market's closed or the API
+hiccups. A real-time options plan gives live quotes; lower tiers return 15-min-
+delayed data through the same endpoints (the chain shows its quote age). For
+the GitHub Action, add `POLYGON_API_KEY` as a second repo secret.
+
 ## What it does
 
 **Backtest tab** — two engines:
@@ -159,7 +179,8 @@ for a view you already hold from your own edge — not as a buy signal by itself
 ## Architecture
 
 ```
-data/loader.py             yfinance SPY + ^VIX -> cached parquet  (swap for ThetaData/Polygon)
+data/loader.py             yfinance SPY + ^VIX -> cached parquet
+data/polygon.py            Polygon.io: real-time SPY quote, intraday bars, option chain + Greeks
 data/intraday.py           intraday bars + per-day features (gap, opening range, timed price)
 data/market_calendar.py    NYSE trading days / next valid expiry
 pricing/black_scholes.py   price, greeks, IV solver

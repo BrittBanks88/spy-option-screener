@@ -35,5 +35,6 @@ jobs:
       - name: Run alert
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         run: |
           python run_alert.py --mode "${{ github.event.inputs.mode || 'auto' }}"

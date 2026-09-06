@@ -128,8 +128,9 @@ def todays_pick(interval="30m", entry_time="10:30", buy_zone=True,
     daily = loader.load_history(start=hist_start, refresh=refresh)
     daily.index = pd.DatetimeIndex(daily.index)
 
-    bars = it.load_intraday(interval, refresh=refresh)
-    session_date, day_bars = it.latest_session(interval, refresh=False)
+    bars = it.load_intraday(interval, refresh=refresh, live_today=True)
+    session_date, day_bars = it.latest_session(interval, refresh=False,
+                                               live_today=True)
     state, live, next_session, day_note = _market_context(session_date)
 
     or_minutes = 30 if interval != "1h" else 60
@@ -177,7 +178,13 @@ def todays_pick(interval="30m", entry_time="10:30", buy_zone=True,
     vix_base = float(daily["vix"].tail(40).mean())
 
     exp_date, dte = mcal.next_weekly_expiry(session_date)
-    chain = chain_mod.synthetic_chain(spot, vix, dte, vix_baseline=vix_base)
+    chain = chain_mod.get_chain(spot, vix, dte, vix_baseline=vix_base,
+                                min_dte=2, max_dte=9,
+                                prefer_live=(state == "live"))
+    if chain.attrs.get("source") == "polygon" and len(chain):
+        exp_date = pd.Timestamp(chain["expiry"].iloc[0]).date()
+        dte = int(chain["dte"].iloc[0])
+        spot = float(chain.attrs.get("spot", spot))
 
     def best_side(dir_):
         sc = score_mod.score_chain(chain, dir_, spot, rv, confidence=1.0)
