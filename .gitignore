@@ -1,0 +1,12 @@
+*.egg-info/
+*.pyc
+.DS_Store
+.claude/settings.local.json
+.env
+.ipynb_checkpoints/
+.pytest_cache/
+.streamlit/
+.venv/
+__pycache__/
+cache/
+outputs/

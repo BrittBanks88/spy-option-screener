@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "screener",
+      "runtimeExecutable": ".venv/bin/streamlit",
+      "runtimeArgs": ["run", "spy_option_screener/app/streamlit_app.py",
+                      "--server.headless", "true", "--server.port", "8501"],
+      "port": 8501
+    }
+  ]
+}
