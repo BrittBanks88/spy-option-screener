@@ -26,6 +26,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from spy_option_screener import _env
+_env.load()   # pick up SLACK_WEBHOOK_URL / POLYGON_API_KEY from .env
+
 from spy_option_screener.data import loader
 from spy_option_screener.signals import strategies as st_mod
 from spy_option_screener.backtest import engine, metrics
