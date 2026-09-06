@@ -85,3 +85,38 @@ def test_get_chain_falls_back_without_key(monkeypatch):
     ch = chain_mod.get_chain(770.0, 15.0, 4, vix_baseline=16.0)
     assert ch.attrs["source"] == "reconstructed"
     assert len(ch) > 0
+
+
+def test_reanchor_moves_prices_the_right_way(monkeypatch):
+    """A stale chain re-anchored to a lower live spot: calls cheaper, puts
+    dearer, call delta down, and spot updated."""
+    monkeypatch.setenv("POLYGON_API_KEY", "x")
+    monkeypatch.setattr(poly, "spot", lambda: 763.7)
+    monkeypatch.setattr(poly, "_get", lambda p, _tries=4, **k: _SNAPSHOT)
+    from spy_option_screener.screener import chain as chain_mod
+    raw = poly.option_chain(dt.date(2026, 9, 8))
+    raw.attrs["quote_age_seconds"] = 600           # clearly stale
+    base = chain_mod.prep_polygon_chain(raw)        # no live spot
+    moved = chain_mod.prep_polygon_chain(raw, live_spot=760.0)  # SPY dropped ~$4
+
+    assert moved.attrs["reanchored"] is True
+    assert moved.attrs["spot"] == pytest.approx(760.0)
+    assert moved.attrs["snapshot_spot"] == pytest.approx(763.7)
+    c0 = base[(base.type == "call") & (base.strike == 764)].iloc[0]
+    c1 = moved[(moved.type == "call") & (moved.strike == 764)].iloc[0]
+    assert c1["mid"] < c0["mid"]                    # call worth less after a drop
+    assert abs(c1["delta"]) < abs(c0["delta"])
+    p0 = base[(base.type == "put") & (base.strike == 764)].iloc[0]
+    p1 = moved[(moved.type == "put") & (moved.strike == 764)].iloc[0]
+    assert p1["mid"] > p0["mid"]                    # put worth more
+
+
+def test_no_reanchor_when_fresh_and_spot_matches(monkeypatch):
+    monkeypatch.setenv("POLYGON_API_KEY", "x")
+    monkeypatch.setattr(poly, "spot", lambda: 763.7)
+    monkeypatch.setattr(poly, "_get", lambda p, _tries=4, **k: _SNAPSHOT)
+    from spy_option_screener.screener import chain as chain_mod
+    raw = poly.option_chain(dt.date(2026, 9, 8))
+    raw.attrs["quote_age_seconds"] = 5             # real-time
+    out = chain_mod.prep_polygon_chain(raw, live_spot=763.72)   # same spot
+    assert out.attrs["reanchored"] is False

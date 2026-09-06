@@ -57,9 +57,17 @@ When the key is present, `trade_plan` / `daily_pick` / the "Today's Pick" and
 "Trade Plan" outputs (and a "Polygon (real-time)" option in the dashboard's
 Chain-data selector) switch to the live snapshot automatically during market
 hours, and fall back to the reconstruction when the market's closed or the API
-hiccups. A real-time options plan gives live quotes; lower tiers return 15-min-
-delayed data through the same endpoints (the chain shows its quote age). For
-the GitHub Action, add `POLYGON_API_KEY` as a second repo secret.
+hiccups. For the GitHub Action, add `POLYGON_API_KEY` as a second repo secret.
+
+**Delayed-tier hybrid.** Polygon's cheaper options plans return 15-minute-
+delayed quotes — which matters, because the plan targets ~10:00 ET, the most
+volatile hour. So when the Polygon chain's quote is stale, it's automatically
+**re-anchored to a near-real-time SPY quote** (yfinance's *underlying* quote
+lags only seconds, unlike its option chain): each strike keeps its implied vol,
+the smile slides with spot (sticky-delta), and mid + Greeks are recomputed at
+the live price. The Slack card then reads `📡 Polygon Greeks + live SPY spot`
+and the dashboard shows the `$snapshot → $live` shift. A real-time options plan
+skips all this — the snapshot is already current.
 
 ## What it does
 

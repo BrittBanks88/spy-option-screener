@@ -49,9 +49,50 @@ def synthetic_chain(spot, vix, dte, vix_baseline=None, width=0.08, step=1.0,
     return chain
 
 
-def prep_polygon_chain(chain: pd.DataFrame, r=0.04, q=0.013) -> pd.DataFrame:
-    """A Polygon snapshot already carries IV + Greeks. Fill any gaps with the
-    model, add mid/spread/moneyness, and keep the same columns score_chain wants.
+def _reanchor_to_live_spot(out: pd.DataFrame, snap_spot: float, live_spot: float,
+                           r: float, q: float) -> pd.DataFrame:
+    """Re-price a (possibly delayed) chain to a fresher underlying print.
+
+    Keeps each strike's implied vol but slides the whole smile with spot
+    (sticky-delta, the right assumption for index options intraday), then
+    recomputes mid + Greeks at the live spot. bid/ask keep the real quoted
+    spread % around the new mid.
+    """
+    dS = live_spot - snap_spot
+    t = np.maximum(bs.years_from_days(out["dte"].clip(lower=0).values), 0.5 / 365)
+
+    # sticky-delta: IV at strike K under the new spot ~ old IV at (K - dS)
+    ks = out["strike"].to_numpy(float)
+    order = np.argsort(ks)
+    iv_new = np.interp(ks - dS, ks[order], out["iv"].to_numpy(float)[order])
+    out = out.copy()
+    out["iv"] = np.clip(iv_new, 0.01, 3.0)
+
+    for kind in ("call", "put"):
+        m = (out["type"] == kind).to_numpy()
+        if not m.any():
+            continue
+        px = bs.price(live_spot, ks[m], t[m], out.loc[m, "iv"].to_numpy(), r, q, kind)
+        g = bs.greeks(live_spot, ks[m], t[m], out.loc[m, "iv"].to_numpy(), r, q, kind)
+        out.loc[m, "mid"] = px
+        for k in ("delta", "gamma", "theta", "vega"):
+            out.loc[m, k] = g[k]
+
+    sp = out.get("spread_pct", pd.Series(0.03, index=out.index)).fillna(0.03).clip(0, 1)
+    out["bid"] = (out["mid"] * (1 - sp / 2)).clip(lower=0)
+    out["ask"] = out["mid"] * (1 + sp / 2)
+    out["moneyness"] = out["strike"] / live_spot
+    out.attrs["snapshot_spot"] = float(snap_spot)
+    out.attrs["spot"] = float(live_spot)
+    out.attrs["reanchored"] = True
+    return out
+
+
+def prep_polygon_chain(chain: pd.DataFrame, r=0.04, q=0.013,
+                       live_spot: float | None = None) -> pd.DataFrame:
+    """A Polygon snapshot already carries IV + Greeks. Fill gaps with the model,
+    add mid/spread/moneyness. If ``live_spot`` is a fresher underlying print and
+    the snapshot looks stale, re-anchor the whole chain to it.
     """
     spot = float(chain.attrs["spot"])
     out = chain.copy()
@@ -79,6 +120,13 @@ def prep_polygon_chain(chain: pd.DataFrame, r=0.04, q=0.013) -> pd.DataFrame:
     out = out[np.isfinite(out["iv"]) & (out["iv"] > 0.01)].reset_index(drop=True)
     out.attrs.update(chain.attrs)
     out.attrs["source"] = "polygon"
+    out.attrs["reanchored"] = False
+
+    age = chain.attrs.get("quote_age_seconds")
+    stale = (age is None) or (age > 90)
+    if (live_spot and np.isfinite(live_spot) and live_spot > 0
+            and (stale or abs(live_spot - spot) / spot > 3e-4)):
+        out = _reanchor_to_live_spot(out, spot, float(live_spot), r, q)
     return out
 
 
@@ -86,11 +134,13 @@ def get_chain(spot, vix, dte, *, vix_baseline=None, r=0.04, q=0.013,
               min_dte=3, max_dte=9, prefer_live=True):
     """Live Polygon chain when a key is set and it works; else the VIX
     reconstruction. Both come back with the columns score_chain expects.
+    A near-real-time underlying quote re-anchors a delayed Polygon chain.
     """
     if prefer_live and _poly.available():
         try:
             raw = _poly.nearest_weekly_chain(min_dte=min_dte, max_dte=max_dte)
-            return prep_polygon_chain(raw, r, q)
+            from ..data import loader as _loader
+            return prep_polygon_chain(raw, r, q, live_spot=_loader.live_spot())
         except Exception:      # noqa: BLE001 -- any API hiccup -> fall back
             pass
     return synthetic_chain(spot, vix, dte, vix_baseline=vix_baseline, r=r, q=q)

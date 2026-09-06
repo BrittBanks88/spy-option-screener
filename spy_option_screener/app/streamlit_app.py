@@ -322,12 +322,15 @@ with tab_chain:
     try:
         if chain_src.startswith("Polygon"):
             raw = _poly.option_chain(exp_date, strike_band=strike_band + 0.01)
-            chain = chain_mod.prep_polygon_chain(raw)
+            chain = chain_mod.prep_polygon_chain(raw, live_spot=loader.live_spot())
             spot = float(chain.attrs["spot"])
             age = chain.attrs.get("quote_age_seconds")
-            if age is not None:
-                st.caption(f"📡 Polygon quote age: {age:.0f}s"
-                           + ("  ⚠️ looks delayed (>2 min)" if age > 120 else ""))
+            if chain.attrs.get("reanchored"):
+                st.caption(f"📡 Polygon chain quote was {age:.0f}s old — Greeks "
+                           f"re-priced to the live SPY quote "
+                           f"(${chain.attrs['snapshot_spot']:.2f} → ${spot:.2f})")
+            elif age is not None:
+                st.caption(f"📡 Polygon quote age: {age:.0f}s (real-time)")
         elif chain_src.startswith("Live"):
             raw, spot = get_live_chain(max(dte + 1, 2))
             chain = chain_mod.enrich_live_chain(raw, fallback_vix=vix_now)

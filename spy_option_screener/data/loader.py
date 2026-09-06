@@ -72,6 +72,20 @@ def _flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def live_spot():
+    """Near-real-time SPY last price. yfinance's underlying quote lags only a few
+    seconds (unlike its option chain), so it's a good re-anchor for a delayed
+    Polygon chain. Returns None if it can't be fetched.
+    """
+    try:
+        import yfinance as yf
+        fi = yf.Ticker("SPY").fast_info
+        px = fi.get("last_price") or fi.get("lastPrice")
+        return float(px) if px else None
+    except Exception:      # noqa: BLE001
+        return None
+
+
 def load_live_chain(dte_max=7):
     """Current SPY option chain from yfinance for expiries within ``dte_max`` days.
 
