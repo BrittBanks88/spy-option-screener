@@ -45,29 +45,45 @@ them to `cache/`. After that it works offline.
 
 By default everything runs on **yfinance** (free): the SPY underlying quote is
 near-live, but intraday bars and the option chain are ~15 min delayed, so the
-chain is *reconstructed from VIX* (±10–20% on premium).
+chain is *reconstructed from VIX* (±10–20% on premium). That's fine for testing
+and paper trading. For real premiums and Greeks, add a data source — the code
+picks the first one that works: **Schwab → Polygon → reconstruction.**
 
-Set a **Polygon.io** key for real option chains with real Greeks:
+### Schwab (free real-time, for account holders)
+
+1. Register an app at [developer.schwab.com](https://developer.schwab.com) →
+   app key + secret (Schwab reviews it; can take a day).
+2. Put them in `.env`:
+   ```
+   SCHWAB_APP_KEY=...
+   SCHWAB_APP_SECRET=...
+   SCHWAB_CALLBACK_URL=https://127.0.0.1
+   ```
+3. `python schwab_auth.py` → authorise in the browser, paste the redirected URL
+   back. Token is stored in `cache/` (gitignored).
+4. The refresh token lasts **7 days** — re-run `python schwab_auth.py` weekly
+   (`--status` shows time left). Best for interactive use; the scheduled
+   GitHub Action can't do the weekly browser step, so it stays on the
+   reconstruction unless you also add a Polygon key.
+
+### Polygon.io (paid, zero maintenance)
 
 ```bash
 echo 'POLYGON_API_KEY=your_key' >> .env
 ```
 
-When the key is present, `trade_plan` / `daily_pick` / the "Today's Pick" and
-"Trade Plan" outputs (and a "Polygon (real-time)" option in the dashboard's
-Chain-data selector) switch to the live snapshot automatically during market
-hours, and fall back to the reconstruction when the market's closed or the API
-hiccups. For the GitHub Action, add `POLYGON_API_KEY` as a second repo secret.
+One API key, works everywhere including the scheduled Action. Options Starter
+(~$29/mo) is **15-min delayed**; Developer (~$79/mo) is real-time. For the
+GitHub Action, add `POLYGON_API_KEY` as a repo secret.
 
-**Delayed-tier hybrid.** Polygon's cheaper options plans return 15-minute-
-delayed quotes — which matters, because the plan targets ~10:00 ET, the most
-volatile hour. So when the Polygon chain's quote is stale, it's automatically
-**re-anchored to a near-real-time SPY quote** (yfinance's *underlying* quote
-lags only seconds, unlike its option chain): each strike keeps its implied vol,
+### Delayed-chain re-anchor
+
+Any delayed vendor chain (Polygon Starter, or a stale snapshot) is automatically
+**re-priced to a near-real-time SPY quote** — it matters because the plan
+targets ~10:00 ET, the most volatile hour. Each strike keeps its implied vol,
 the smile slides with spot (sticky-delta), and mid + Greeks are recomputed at
-the live price. The Slack card then reads `📡 Polygon Greeks + live SPY spot`
-and the dashboard shows the `$snapshot → $live` shift. A real-time options plan
-skips all this — the snapshot is already current.
+the live price. The Slack card then reads `📡 … Greeks + live SPY spot`.
+Real-time feeds (Schwab, Polygon Developer) skip this — the snapshot is current.
 
 ## What it does
 
@@ -188,6 +204,7 @@ for a view you already hold from your own edge — not as a buy signal by itself
 
 ```
 data/loader.py             yfinance SPY + ^VIX -> cached parquet
+data/schwab.py             Schwab Trader API: free real-time quote / bars / chain + Greeks (OAuth)
 data/polygon.py            Polygon.io: real-time SPY quote, intraday bars, option chain + Greeks
 data/intraday.py           intraday bars + per-day features (gap, opening range, timed price)
 data/market_calendar.py    NYSE trading days / next valid expiry

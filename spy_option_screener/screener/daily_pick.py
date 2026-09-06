@@ -181,7 +181,7 @@ def todays_pick(interval="30m", entry_time="10:30", buy_zone=True,
     chain = chain_mod.get_chain(spot, vix, dte, vix_baseline=vix_base,
                                 min_dte=2, max_dte=9,
                                 prefer_live=(state == "live"))
-    if chain.attrs.get("source") == "polygon" and len(chain):
+    if chain.attrs.get("source") in ("polygon", "schwab") and len(chain):
         exp_date = pd.Timestamp(chain["expiry"].iloc[0]).date()
         dte = int(chain["dte"].iloc[0])
         spot = float(chain.attrs.get("spot", spot))

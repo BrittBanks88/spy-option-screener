@@ -104,7 +104,9 @@ class TradePlan:
         s = "CALL" if self.direction > 0 else "PUT"
         arrow = "above" if self.direction > 0 else "below"
         turn = "turning up" if self.direction > 0 else "rolling over"
-        src = {"polygon": "📡 live Polygon chain",
+        src = {"schwab": "📡 live Schwab chain",
+               "polygon": "📡 live Polygon chain",
+               "schwab+livespot": "📡 Schwab Greeks + live SPY spot",
                "polygon+livespot": "📡 Polygon Greeks + live SPY spot",
                }.get(self.data_source, "🔒 reconstructed chain")
         tag = f"🟢 live · {src}" if self.live else f"{src} — confirm at the open"
@@ -322,7 +324,8 @@ def build_plan(entry_time="10:00", interval="1h", buy_zone=(0.35, 0.60),
         u_entry, vix, dte, vix_baseline=float(dsig_daily["vix"].tail(40).mean()),
         min_dte=3, max_dte=9,
         prefer_live=(for_date is None))     # back-checks stay on the reconstruction
-    live_chain = chain.attrs.get("source") == "polygon"
+    chain_source = chain.attrs.get("source", "reconstructed")
+    live_chain = chain_source in ("polygon", "schwab")
     reanchored = bool(chain.attrs.get("reanchored"))
     if live_chain and len(chain):
         exp_date = pd.Timestamp(chain["expiry"].iloc[0]).date()
@@ -397,16 +400,17 @@ def build_plan(entry_time="10:00", interval="1h", buy_zone=(0.35, 0.60),
         max_loss=o_entry * 100.0, reward_risk=reward_risk, time_stop=time_stop,
         manage_date=manage_date,
         overnight=overnight_mod.assess(dsig_daily, session_date, pdir).line(pdir),
-        data_source=("polygon+livespot" if (live_chain and reanchored)
-                     else "polygon" if live_chain else "reconstructed"),
+        data_source=(f"{chain_source}+livespot" if (live_chain and reanchored)
+                     else chain_source if live_chain else "reconstructed"),
         caveat=(
-            "Polygon Greeks re-priced to a live SPY quote (chain quote was "
-            "stale). Pullback is the best-behaved signal in backtests, still "
-            "only ~breakeven on a ~2-yr sample. Size small. Not investment advice."
+            f"{chain_source.title()} Greeks re-priced to a live SPY quote (the "
+            "chain quote was stale). Pullback is the best-behaved signal in "
+            "backtests, still only ~breakeven on a ~2-yr sample. Size small. "
+            "Not investment advice."
             if (live_chain and reanchored) else
-            "Live Polygon option chain. The pullback signal is the best-behaved "
-            "in backtests but still only ~breakeven on a ~2-yr sample. Size "
-            "small. Not investment advice." if live_chain else
+            f"Live {chain_source.title()} option chain. The pullback signal is "
+            "the best-behaved in backtests but still only ~breakeven on a ~2-yr "
+            "sample. Size small. Not investment advice." if live_chain else
             "Reconstructed vol surface (±10–20%). The pullback signal is the "
             "best-behaved in backtests but still only ~breakeven on a ~2-yr "
             "sample. Size small. Not investment advice."),

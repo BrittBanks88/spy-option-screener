@@ -66,13 +66,14 @@ def load_intraday(interval="1h", refresh=False, period=None,
 
 
 def _append_live_today(df: pd.DataFrame, interval: str) -> pd.DataFrame:
-    """Replace today's (delayed/absent) rows with real-time Polygon bars."""
-    from . import polygon as poly
-    if not poly.available():
+    """Replace today's (delayed/absent) rows with real-time vendor bars."""
+    from . import polygon, schwab
+    vendor = schwab if schwab.available() else polygon if polygon.available() else None
+    if vendor is None:
         return df
     try:
-        fresh = poly.intraday_bars(interval if interval in
-                                   ("1m", "5m", "15m", "30m", "1h") else "30m")
+        fresh = vendor.intraday_bars(interval if interval in
+                                     ("1m", "5m", "15m", "30m", "1h") else "30m")
     except Exception:      # noqa: BLE001
         return df
     if fresh.empty:

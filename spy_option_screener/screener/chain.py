@@ -9,6 +9,7 @@ import pandas as pd
 from ..pricing import black_scholes as bs
 from ..pricing import vol_model as vm
 from ..data import polygon as _poly
+from ..data import schwab as _schwab
 
 
 def synthetic_chain(spot, vix, dte, vix_baseline=None, width=0.08, step=1.0,
@@ -88,11 +89,11 @@ def _reanchor_to_live_spot(out: pd.DataFrame, snap_spot: float, live_spot: float
     return out
 
 
-def prep_polygon_chain(chain: pd.DataFrame, r=0.04, q=0.013,
-                       live_spot: float | None = None) -> pd.DataFrame:
-    """A Polygon snapshot already carries IV + Greeks. Fill gaps with the model,
-    add mid/spread/moneyness. If ``live_spot`` is a fresher underlying print and
-    the snapshot looks stale, re-anchor the whole chain to it.
+def prep_live_chain(chain: pd.DataFrame, *, source: str, r=0.04, q=0.013,
+                    live_spot: float | None = None) -> pd.DataFrame:
+    """A broker/vendor snapshot (Schwab, Polygon) already carries IV + Greeks.
+    Fill any gaps with the model, add mid/spread/moneyness. If ``live_spot`` is
+    a fresher underlying print and the snapshot looks stale, re-anchor to it.
     """
     spot = float(chain.attrs["spot"])
     out = chain.copy()
@@ -119,30 +120,43 @@ def prep_polygon_chain(chain: pd.DataFrame, r=0.04, q=0.013,
                 out.loc[miss, k] = gg[k]
     out = out[np.isfinite(out["iv"]) & (out["iv"] > 0.01)].reset_index(drop=True)
     out.attrs.update(chain.attrs)
-    out.attrs["source"] = "polygon"
+    out.attrs["source"] = source
     out.attrs["reanchored"] = False
 
     age = chain.attrs.get("quote_age_seconds")
-    stale = (age is None) or (age > 90)
+    stale = (age is not None) and (age > 90)      # only Polygon reports an age
     if (live_spot and np.isfinite(live_spot) and live_spot > 0
             and (stale or abs(live_spot - spot) / spot > 3e-4)):
         out = _reanchor_to_live_spot(out, spot, float(live_spot), r, q)
     return out
 
 
+def prep_polygon_chain(chain, r=0.04, q=0.013, live_spot=None):
+    """Back-compat shim."""
+    return prep_live_chain(chain, source="polygon", r=r, q=q, live_spot=live_spot)
+
+
+# vendors in priority order: real-time & free first
+_LIVE_VENDORS = (("schwab", _schwab), ("polygon", _poly))
+
+
 def get_chain(spot, vix, dte, *, vix_baseline=None, r=0.04, q=0.013,
               min_dte=3, max_dte=9, prefer_live=True):
-    """Live Polygon chain when a key is set and it works; else the VIX
-    reconstruction. Both come back with the columns score_chain expects.
-    A near-real-time underlying quote re-anchors a delayed Polygon chain.
+    """First working real-time vendor (Schwab, then Polygon); else the VIX
+    reconstruction. Everything comes back with the columns score_chain expects,
+    and a stale vendor chain is re-anchored to a near-real-time SPY quote.
     """
-    if prefer_live and _poly.available():
-        try:
-            raw = _poly.nearest_weekly_chain(min_dte=min_dte, max_dte=max_dte)
-            from ..data import loader as _loader
-            return prep_polygon_chain(raw, r, q, live_spot=_loader.live_spot())
-        except Exception:      # noqa: BLE001 -- any API hiccup -> fall back
-            pass
+    if prefer_live:
+        from ..data import loader as _loader
+        for name, vendor in _LIVE_VENDORS:
+            if not vendor.available():
+                continue
+            try:
+                raw = vendor.nearest_weekly_chain(min_dte=min_dte, max_dte=max_dte)
+                return prep_live_chain(raw, source=name, r=r, q=q,
+                                       live_spot=_loader.live_spot())
+            except Exception:      # noqa: BLE001 -- any API hiccup -> next vendor
+                continue
     return synthetic_chain(spot, vix, dte, vix_baseline=vix_baseline, r=r, q=q)
 
 

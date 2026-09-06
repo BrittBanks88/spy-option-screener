@@ -87,20 +87,28 @@ def fmt_money(x):
 
 
 from spy_option_screener.data import polygon as _poly
+from spy_option_screener.data import schwab as _schwab
 
 # ── sidebar (advanced knobs, hidden from the main flow) ─────────────────────
 with st.sidebar:
     st.header("Settings")
     _srcs = ["Reconstructed from VIX", "Live (yfinance, delayed)"]
-    if _poly.available():
-        _srcs.insert(0, "Polygon (real-time)")
+    _live_vendor = ("Schwab" if _schwab.available()
+                    else "Polygon" if _poly.available() else None)
+    if _live_vendor:
+        _srcs.insert(0, f"{_live_vendor} (real-time)")
     chain_src = st.radio(
         "Chain data", _srcs, index=0,
-        help="Polygon = real option chain with Greeks (needs POLYGON_API_KEY). "
+        help="Live = real option chain with Greeks from your broker/vendor. "
              "Reconstructed always works and matches the backtest engine. "
              "yfinance quotes are unreliable outside market hours / near 0-DTE.")
-    if not _poly.available():
-        st.caption("💡 set `POLYGON_API_KEY` in `.env` for real-time chains")
+    if not _live_vendor:
+        st.caption("💡 add a Schwab (`python schwab_auth.py`) or Polygon key "
+                   "for real-time chains")
+    elif _live_vendor == "Schwab":
+        _ts = _schwab.token_status()
+        if _ts["refresh_valid_for_days"] < 1:
+            st.warning("Schwab token expires soon — run `python schwab_auth.py`")
     hist_start = st.selectbox("History window", ["2018-01-01", "2015-01-01",
                               "2012-01-01", "2020-01-01"], index=0)
     rv_note = st.empty()
@@ -320,17 +328,19 @@ with tab_chain:
 
     # ── build + score the chain ──────────────────────────────────────────
     try:
-        if chain_src.startswith("Polygon"):
-            raw = _poly.option_chain(exp_date, strike_band=strike_band + 0.01)
-            chain = chain_mod.prep_polygon_chain(raw, live_spot=loader.live_spot())
+        if chain_src.startswith(("Schwab", "Polygon")):
+            vendor = _schwab if chain_src.startswith("Schwab") else _poly
+            raw = vendor.option_chain(exp_date, strike_band=strike_band + 0.01)
+            chain = chain_mod.prep_live_chain(
+                raw, source=chain_src.split()[0].lower(), live_spot=loader.live_spot())
             spot = float(chain.attrs["spot"])
             age = chain.attrs.get("quote_age_seconds")
             if chain.attrs.get("reanchored"):
-                st.caption(f"📡 Polygon chain quote was {age:.0f}s old — Greeks "
-                           f"re-priced to the live SPY quote "
+                st.caption(f"📡 chain quote was {age:.0f}s old — Greeks re-priced "
+                           f"to the live SPY quote "
                            f"(${chain.attrs['snapshot_spot']:.2f} → ${spot:.2f})")
             elif age is not None:
-                st.caption(f"📡 Polygon quote age: {age:.0f}s (real-time)")
+                st.caption(f"📡 {chain_src.split()[0]} quote age: {age:.0f}s (real-time)")
         elif chain_src.startswith("Live"):
             raw, spot = get_live_chain(max(dte + 1, 2))
             chain = chain_mod.enrich_live_chain(raw, fallback_vix=vix_now)
