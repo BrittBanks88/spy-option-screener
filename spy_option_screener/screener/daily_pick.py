@@ -141,10 +141,14 @@ def todays_pick(interval="30m", entry_time="10:30", buy_zone=True,
         raise RuntimeError("no features for the latest session")
     feat = feat_all[feat_all.index.date == session_date]
 
-    # signals ------------------------------------------------------------
+    # signals ----------------------------------------------------------
+    # daily-close signals are evaluated as of the last *completed* daily bar
+    # (mid-session there's no bar for today yet).
+    last_daily = pd.Timestamp(daily.index[-1])
     db = dsig.combine(daily)
     db.index = pd.DatetimeIndex(db.index)
-    sig = isig.combine_intraday(feat, daily_bias=db).iloc[0]
+    db_bias = db.loc[:last_daily].iloc[[-1]].set_axis(feat.index)
+    sig = isig.combine_intraday(feat, daily_bias=db_bias).iloc[0]
     gap_row = isig.gap_continuation(feat).iloc[0]
     orb_row = isig.opening_range_breakout(feat).iloc[0]
 
@@ -153,13 +157,14 @@ def todays_pick(interval="30m", entry_time="10:30", buy_zone=True,
                   "momentum_breakout", "vol_regime"):
         srow = dsig.STRATEGIES[sname](daily)
         srow.index = pd.DatetimeIndex(srow.index)
-        r = srow.reindex(feat.index).iloc[0]
-        daily_rows.append((sname.replace("_", " ").title(), r))
+        daily_rows.append((sname.replace("_", " ").title(),
+                           srow.loc[:last_daily].iloc[-1]))
 
     reasons = []
     for label, r in daily_rows:
-        if int(r["direction"]) != 0:
-            arrow = "calls" if r["direction"] > 0 else "puts"
+        d = 0 if pd.isna(r["direction"]) else int(r["direction"])
+        if d != 0:
+            arrow = "calls" if d > 0 else "puts"
             reasons.append(f"{label}: {arrow} ({r['confidence']:.0%}) — {r['edge_note']}")
         else:
             reasons.append(f"{label}: neutral")
