@@ -154,6 +154,27 @@ standalone overnight signal. Instead every plan carries an **overnight-carry
 line** rating whether holding *that* position through the close is favourable
 (uptrend, calm VIX, one weeknight) or not (Friday/holiday weekend, VIX spike).
 
+**Price Target view / `price_alert.py`** — a read-only alternative to the trade
+plan: no strike, no entry price, no stop mechanics. Blends all five daily
+signals (not just pullback, so it fires more often) into a **bias**, a **near
+target** (~1 ATR, typically 1–2 sessions), an **extended target** (prior
+swing / ~1.8–2.8 ATR, "within the week"), and a **watch level** that would
+weaken the read — plus which side it favors (calls or puts). Honesty check:
+unlike the pullback trade plan, these specific targets/timings are **not**
+separately backtested for hit-rate — they're ATR-scaled heuristics, and the
+card says so every time.
+
+```bash
+python price_alert.py                    # latest session
+python price_alert.py --for 2026-09-11   # back-check a past session
+python run_alert.py --kind price-target --mode auto   # scheduled version
+```
+
+The scheduled workflow posts **both** the trade plan and the price-target view
+by default (independent dedupe markers — either can fire without the other).
+Pass `kind: price-target` (or `trade-plan`) to `workflow_dispatch` to post
+just one manually.
+
 **Trade Plan tab / `slack_plan.py`** — the pullback→continuation setup written
 as a complete, Slack-ready plan: contract + expiration, a limit **entry** price
 and the SPY level/time that triggers it, a **stop** (−50% of premium, with the
@@ -217,6 +238,7 @@ screener/chain.py          synthetic or live option chain
 screener/score.py          rank long calls/puts (breakeven, POP, greeks, leverage...)
 screener/daily_pick.py     combine signals -> the one contract to buy today
 screener/trade_plan.py     pullback->continuation -> full plan + Slack mrkdwn / Block Kit
+screener/price_target.py   read-only level+timing view (no contract) from all 5 daily signals
 backtest/engine.py         event-driven loop (entry_prices + same_day_signal aware)
 backtest/intraday.py       glue: intraday signals + timed entry -> engine
 backtest/rules.py          entry/exit config (TradeRules, incl. entry_time)

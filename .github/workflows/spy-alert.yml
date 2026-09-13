@@ -23,6 +23,9 @@ on:
       mode:
         description: mode (auto|morning|close)
         default: auto
+      kind:
+        description: "trade-plan (backtested contract) or price-target (read-only level+timing view)"
+        default: trade-plan
 
 jobs:
   alert:
@@ -50,9 +53,20 @@ jobs:
             *)
               echo "mode=${{ github.event.inputs.mode || 'auto' }}" >> "$GITHUB_OUTPUT" ;;
           esac
-      - name: Run alert
+      - name: Run alert(s)
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         run: |
-          python run_alert.py --mode "${{ steps.pick.outputs.mode }}" --ignore-window
+          if [ -n "${{ github.event.inputs.kind }}" ]; then
+            python run_alert.py --mode "${{ steps.pick.outputs.mode }}" \
+              --kind "${{ github.event.inputs.kind }}" --ignore-window
+          else
+            # scheduled runs post both: the backtested contract plan and the
+            # read-only price-target view. Independent dedupe markers, so
+            # either can fire without the other.
+            python run_alert.py --mode "${{ steps.pick.outputs.mode }}" \
+              --kind trade-plan --ignore-window
+            python run_alert.py --mode "${{ steps.pick.outputs.mode }}" \
+              --kind price-target --ignore-window
+          fi

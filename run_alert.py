@@ -34,6 +34,7 @@ from zoneinfo import ZoneInfo
 from spy_option_screener import _env
 from spy_option_screener.data import market_calendar as mcal
 from spy_option_screener.screener.trade_plan import build_plan
+from spy_option_screener.screener.price_target import build_view
 
 _env.load()
 ET = ZoneInfo("America/New_York")
@@ -61,6 +62,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", default="auto",
                     choices=["auto", "morning", "close"])
+    ap.add_argument("--kind", default="trade-plan",
+                    choices=["trade-plan", "price-target"],
+                    help="trade-plan = pullback contract w/ entry/stop/target "
+                         "(backtested, fires less often). price-target = "
+                         "read-only SPY level + timing view, no contract "
+                         "(fires more often, timing is a heuristic not a "
+                         "backtested hit-rate).")
     ap.add_argument("--webhook", default=os.environ.get("SLACK_WEBHOOK_URL"))
     ap.add_argument("--dry-run", action="store_true",
                     help="print the payload, don't POST")
@@ -96,26 +104,35 @@ def main() -> int:
                 return 0
             mode = "morning"
 
-    marker = _MARKERS / f".alert_{mode}_{now:%Y%m%d}"
+    marker = _MARKERS / f".alert_{args.kind}_{mode}_{now:%Y%m%d}"
     if marker.exists() and not args.no_dedupe:
-        print(f"already ran {mode} for {now.date()} ({marker.name}) — skipping.")
+        print(f"already ran {args.kind}/{mode} for {now.date()} "
+              f"({marker.name}) — skipping.")
         return 0
 
     interval = "30m" if mode == "morning" else "1h"
-    plan = build_plan(entry_time="10:00", interval=interval)
 
-    style = "full" if args.full else "simple"
-    payload = plan.slack_payload(style=style)
-    if mode == "close" and plan.qualified:
-        payload["blocks"].insert(1, {"type": "context", "elements": [
-            {"type": "mrkdwn", "text": ":clock4: forms at tomorrow's open — "
-             "re-check around 10am ET"}]})
+    if args.kind == "price-target":
+        obj = build_view(interval=interval)
+        payload = obj.slack_payload()
+        qualified, print_text = obj.qualified, obj.slack_text()
+        style = "n/a"
+    else:
+        obj = build_plan(entry_time="10:00", interval=interval)
+        style = "full" if args.full else "simple"
+        payload = obj.slack_payload(style=style)
+        if mode == "close" and obj.qualified:
+            payload["blocks"].insert(1, {"type": "context", "elements": [
+                {"type": "mrkdwn", "text": ":clock4: forms at tomorrow's open — "
+                 "re-check around 10am ET"}]})
+        qualified = obj.qualified
+        print_text = obj.slack_simple_text() if not args.full else obj.slack_text()
 
-    should_post = plan.qualified or args.always
-    print(f"[{now:%Y-%m-%d %H:%M %Z}] mode={mode} style={style} "
-          f"qualified={plan.qualified} "
+    should_post = qualified or args.always
+    print(f"[{now:%Y-%m-%d %H:%M %Z}] kind={args.kind} mode={mode} style={style} "
+          f"qualified={qualified} "
           f"post={should_post and bool(args.webhook) and not args.dry_run}")
-    print(plan.slack_simple_text() if not args.full else plan.slack_text())
+    print(print_text)
 
     if not should_post:
         return 0
