@@ -102,6 +102,43 @@ def test_run_alert_dry_run_smoke(capsys):
     assert "mode=morning" in r.stdout
 
 
+def _run_alert(*extra_args, timeout=180):
+    import subprocess
+    import sys
+    return subprocess.run(
+        [sys.executable, "run_alert.py", "--dry-run", "--no-dedupe", *extra_args],
+        capture_output=True, text=True, timeout=timeout)
+
+
+def test_explicit_mode_ignores_wall_clock_window():
+    """A cron-triggered run must not depend on landing inside the narrow
+    auto-mode window — GitHub's scheduler can fire hours late. Explicit
+    --mode (what the workflow now passes) must run regardless of the clock."""
+    r = _run_alert("--mode", "close", "--ignore-window", "--force")
+    assert r.returncode == 0
+    assert "outside the alert windows" not in r.stdout
+    assert "mode=close" in r.stdout
+
+
+def test_auto_mode_outside_window_without_ignore_flag_is_a_noop():
+    r = _run_alert("--mode", "auto")
+    # on a non-trading day this exits for that reason instead; either way it
+    # must not silently crash, and it must not report post=True
+    assert r.returncode == 0
+    assert "post=True" not in r.stdout
+
+
+def test_ignore_window_still_respects_trading_day_gate():
+    """--ignore-window is not --force: a holiday/weekend must still no-op."""
+    import datetime as dt
+    from spy_option_screener.data import market_calendar as mcal
+    if mcal.is_trading_day(dt.date.today()):
+        pytest.skip("today is a trading day; this checks the holiday gate")
+    r = _run_alert("--mode", "morning", "--ignore-window")
+    assert r.returncode == 0
+    assert "not a trading day" in r.stdout
+
+
 def test_slack_text_has_the_five_plan_lines():
     import pandas as pd
     from spy_option_screener.data import loader, intraday as it
