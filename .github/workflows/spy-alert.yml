@@ -1,16 +1,23 @@
 name: SPY trade alert
 
 # Posts the pullback→continuation plan to Slack twice on trading days.
-# GitHub cron is UTC; ET is UTC-4 (Mar–Nov) or UTC-5 (Nov–Mar), so each target
-# time is scheduled at BOTH offsets and a per-day marker (restored from cache)
-# stops the second one from double-posting.
+#
+# GitHub's cron scheduler can drift by HOURS under load (observed: crons meant
+# for 10:15/15:50 ET landing at 13:44, 14:35, 18:00, 18:49 ET). So each target
+# gets 3 attempts (EDT offset, EST offset, and a backstop an hour later), the
+# job maps github.event.schedule -> an explicit mode (never relies on wall-
+# clock "auto" for a cron trigger), and run_alert.py's --ignore-window skips
+# the time check while still respecting the trading-day/holiday gate. The
+# per-day marker (restored from cache) stops repeats from double-posting.
 
 on:
   schedule:
-    - cron: "15 14 * * 1-5"   # 10:15 EDT  (morning)
-    - cron: "15 15 * * 1-5"   # 10:15 EST  (morning)
-    - cron: "50 19 * * 1-5"   # 15:50 EDT  (close)
-    - cron: "50 20 * * 1-5"   # 15:50 EST  (close)
+    - cron: "15 14 * * 1-5"   # ~10:15 EDT  (morning, attempt 1)
+    - cron: "15 15 * * 1-5"   # ~10:15 EST  (morning, attempt 2)
+    - cron: "15 16 * * 1-5"   # backstop    (morning, attempt 3)
+    - cron: "50 19 * * 1-5"   # ~15:50 EDT  (close, attempt 1)
+    - cron: "50 20 * * 1-5"   # ~15:50 EST  (close, attempt 2)
+    - cron: "50 21 * * 1-5"   # backstop    (close, attempt 3)
   workflow_dispatch:
     inputs:
       mode:
@@ -32,9 +39,20 @@ jobs:
         with:
           path: outputs/.alert_*
           key: alert-markers-${{ steps.day.outputs.d }}
+      - name: Map schedule -> mode
+        id: pick
+        run: |
+          case "${{ github.event.schedule }}" in
+            "15 14 * * 1-5"|"15 15 * * 1-5"|"15 16 * * 1-5")
+              echo "mode=morning" >> "$GITHUB_OUTPUT" ;;
+            "50 19 * * 1-5"|"50 20 * * 1-5"|"50 21 * * 1-5")
+              echo "mode=close" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "mode=${{ github.event.inputs.mode || 'auto' }}" >> "$GITHUB_OUTPUT" ;;
+          esac
       - name: Run alert
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         run: |
-          python run_alert.py --mode "${{ github.event.inputs.mode || 'auto' }}"
+          python run_alert.py --mode "${{ steps.pick.outputs.mode }}" --ignore-window

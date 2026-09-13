@@ -9,6 +9,10 @@ Two moments per trading day (see research/intraday_pattern.py for why):
     python run_alert.py --mode morning --webhook $SLACK_WEBHOOK_URL
     python run_alert.py --mode auto --dry-run            # pick mode by the clock
 
+GitHub Actions cron can drift by hours under load, so the workflow calls this
+with an explicit --mode and --ignore-window (see .github/workflows/spy-alert.yml)
+rather than relying on --mode auto's wall-clock window.
+
 By default it posts ONLY when a setup qualifies (so #trade-post isn't spammed
 with "nothing today"). Pass --always to post the no-setup card too.
 
@@ -65,7 +69,13 @@ def main() -> int:
     ap.add_argument("--full", action="store_true",
                     help="post the detailed card instead of the simple one")
     ap.add_argument("--force", action="store_true",
-                    help="run even outside the usual windows / on a non-trading day")
+                    help="run even on a non-trading day, and skip the time-window "
+                         "check (implies --ignore-window)")
+    ap.add_argument("--ignore-window", action="store_true",
+                    help="run --mode morning/close regardless of wall-clock time, "
+                         "but still respect the trading-day/holiday gate. Use this "
+                         "from a scheduler that can't hit the window precisely "
+                         "(e.g. GitHub Actions cron, which can drift by hours).")
     ap.add_argument("--no-dedupe", action="store_true",
                     help="ignore the once-per-day-per-mode marker file")
     args = ap.parse_args()
@@ -79,9 +89,10 @@ def main() -> int:
     if mode == "auto":
         mode = _auto_mode(now)
         if mode is None:
-            if not args.force:
+            if not (args.force or args.ignore_window):
                 print(f"{now:%H:%M %Z} is outside the alert windows "
-                      "(09:55-11:30 or 15:30-16:30 ET). Use --force or --mode.")
+                      "(09:55-11:30 or 15:30-16:30 ET). Use --force, "
+                      "--ignore-window, or --mode.")
                 return 0
             mode = "morning"
 
