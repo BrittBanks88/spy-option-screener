@@ -1,10 +1,17 @@
-"""SPY gap-fill screener -- one page, one purpose.
+"""SPY gap-fill screener -- signal page + accuracy tracker.
 
-Detects an open (unfilled) overnight/opening gap and shows: a price target
-(the pre-gap level), a stop (2.0x ATR beyond the gap open), and a 14-trading-
-day time stop. No strike, no premium, no contract mechanics -- see
-screener/gap_screener.py for the full backtest this is built on (26+ years
-of SPY daily bars: 85% hit target, 14% stop out, 1% time out).
+Tab 1: detects an open (unfilled) overnight/opening gap and shows a price
+target (the pre-gap level), a stop (2.0x ATR beyond the gap open), and a
+14-trading-day time stop. No strike, no premium, no contract mechanics --
+see screener/gap_screener.py for the full backtest this is built on (26+
+years of SPY daily bars: 85% hit target, 14% stop out, 1% time out).
+
+Tab 2: a read-only accuracy log of contracts tracked against those signals,
+stored in a Google Sheet (data/tracker_store.py). Target/stop/time-out are
+checked automatically against real SPY price data -- that's the screener's
+own accuracy. Entry/exit prices and P&L come from the user's real brokerage
+screenshots, added via a one-off script, not reconstructed -- that's their
+real trade result. Two different numbers, kept deliberately separate.
 
     streamlit run streamlit_app.py
 
@@ -30,6 +37,7 @@ _env.load()   # pick up SLACK_WEBHOOK_URL / POLYGON_API_KEY from .env
 
 from spy_option_screener.data import loader
 from spy_option_screener.data import market_calendar as mcal
+from spy_option_screener.data import tracker_store as ts
 from spy_option_screener.screener import gap_screener as gap_mod
 
 st.set_page_config(page_title="SPY Gap Screener", layout="centered", page_icon="📊")
@@ -74,43 +82,107 @@ def spy_header():
     return spot, status
 
 
+@st.cache_data(ttl=300)
+def get_tracked(_daily_last_date: str):
+    """Cache key includes the last daily bar date so a new close forces a
+    fresh status check; gspread calls themselves aren't cached beyond that."""
+    client = ts.client_from_info(st.secrets["gcp_service_account"])
+    ws = ts.get_worksheet(client, st.secrets["gsheet"]["url"])
+    daily = loader.load_history(start=HIST_START)
+    ts.refresh_statuses(ws, daily)
+    return ts.list_entries(ws)
+
+
 spot, status = spy_header()
 st.markdown(f"## SPY&nbsp;&nbsp;\\${spot:,.2f}")
 st.caption(status)
 st.caption("🔒 Manual only — this page never places a trade. You check it, you decide.")
 st.divider()
 
-try:
-    view = get_view()
-except Exception as e:  # noqa: BLE001
-    st.error(f"Couldn't check for a gap: {e}")
-    st.stop()
+tab_signal, tab_tracker = st.tabs(["📊 Signal", "📋 Tracker"])
 
-if not view.qualified:
-    st.markdown("### 😴 No open gap right now")
-    st.caption(view.setup)
-    st.caption("Most days have no qualifying gap sitting open — that's "
-               "expected. You'll see levels here the next time one is live.")
-else:
-    arrow = "📉➡️📈" if view.gap_type == "up" else "📈➡️📉"
-    st.markdown(f"### {arrow}  Gap {view.gap_type.upper()}  ·  {view.gap_date}")
-    est = "  _(estimated)_" if view.spot_estimated else ""
-    st.caption(f"day {view.days_elapsed} of 14{est}")
+with tab_signal:
+    try:
+        view = get_view()
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Couldn't check for a gap: {e}")
+        st.stop()
 
-    c1, c2 = st.columns(2)
-    c1.metric("TARGET", f"${view.target:.2f}", f"{view.target_pct:+.1%}",
-              help="The pre-gap price level — where this gap closes")
-    c2.metric("STOP", f"${view.stop:.2f}", f"{view.stop_pct:+.1%}",
-              delta_color="inverse",
-              help="2.0x ATR beyond the gap open — cuts the read if price "
-                   "runs this far the wrong way")
-    st.metric("TIME STOP", view.time_stop_date,
-              f"{view.days_left} sessions left", delta_color="off")
+    if not view.qualified:
+        st.markdown("### 😴 No open gap right now")
+        st.caption(view.setup)
+        st.caption("Most days have no qualifying gap sitting open — that's "
+                   "expected. You'll see levels here the next time one is live.")
+    else:
+        arrow = "📉➡️📈" if view.gap_type == "up" else "📈➡️📉"
+        st.markdown(f"### {arrow}  Gap {view.gap_type.upper()}  ·  {view.gap_date}")
+        est = "  _(estimated)_" if view.spot_estimated else ""
+        st.caption(f"day {view.days_elapsed} of 14{est}")
 
-    st.caption(f"historical fill rate for this type of gap: "
-               f"**{view.historical_fill_rate:.0%}** within 14 trading days")
+        c1, c2 = st.columns(2)
+        c1.metric("TARGET", f"${view.target:.2f}", f"{view.target_pct:+.1%}",
+                  help="The pre-gap price level — where this gap closes")
+        c2.metric("STOP", f"${view.stop:.2f}", f"{view.stop_pct:+.1%}",
+                  delta_color="inverse",
+                  help="2.0x ATR beyond the gap open — cuts the read if "
+                       "price runs this far the wrong way")
+        st.metric("TIME STOP", view.time_stop_date,
+                  f"{view.days_left} sessions left", delta_color="off")
 
-st.divider()
-st.caption(view.caveat)
-st.caption("CLI: `python gap_alert.py`  ·  scheduled alerts: "
-           "`.github/workflows/spy-alert.yml`")
+        st.caption(f"historical fill rate for this type of gap: "
+                   f"**{view.historical_fill_rate:.0%}** within 14 trading days")
+
+    st.divider()
+    st.caption(view.caveat)
+    st.caption("CLI: `python gap_alert.py`  ·  scheduled alerts: "
+               "`.github/workflows/spy-alert.yml`")
+
+with tab_tracker:
+    st.caption("Every contract tracked against a gap signal. TARGET / STOP / "
+               "TIME STOP are checked automatically against real SPY price "
+               "data — that's the screener's own accuracy. Entry/exit price "
+               "and P&L come from real brokerage screenshots, not an "
+               "estimate — that's the real trade result.")
+    try:
+        df = get_tracked(str(loader.load_history(start=HIST_START).index[-1].date()))
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Couldn't reach the tracking sheet: {e}")
+        st.stop()
+
+    if df.empty:
+        st.info("Nothing tracked yet.")
+    else:
+        resolved = df[df["status"] != "open"]
+        n_res = len(resolved)
+        if n_res:
+            hit = (resolved["status"] == "hit_target").sum()
+            st.metric("Screener accuracy (resolved signals)",
+                      f"{hit}/{n_res} hit target ({hit/n_res:.0%})")
+
+        badge = {"open": "🟡 open", "hit_target": "🟢 hit target",
+                 "hit_stop": "🔴 hit stop", "timed_out": "⚪ timed out"}
+        show = df.copy()
+        show["status"] = show["status"].map(lambda s: badge.get(s, s))
+        for c in ["entry_price", "target", "stop", "exit_price"]:
+            show[c] = pd.to_numeric(show[c], errors="coerce").map(
+                lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+        show["pnl_dollars"] = pd.to_numeric(df["pnl_dollars"], errors="coerce").map(
+            lambda x: f"${x:+,.0f}" if pd.notna(x) else "")
+        show["pnl_pct"] = pd.to_numeric(df["pnl_pct"], errors="coerce").map(
+            lambda x: f"{x:+.0%}" if pd.notna(x) else "")
+
+        st.dataframe(
+            show[["date_added", "contract", "entry_price", "gap_type",
+                  "target", "stop", "time_stop_date", "status",
+                  "resolution_date", "exit_price", "pnl_dollars", "pnl_pct",
+                  "notes"]],
+            hide_index=True, width="stretch",
+            column_config={
+                "date_added": "Added", "contract": "Contract",
+                "entry_price": "Entry", "gap_type": "Gap",
+                "target": "Target", "stop": "Stop",
+                "time_stop_date": "Time stop", "status": "Status",
+                "resolution_date": "Resolved", "exit_price": "Exit",
+                "pnl_dollars": "P&L $", "pnl_pct": "P&L %",
+                "notes": "Notes",
+            })
