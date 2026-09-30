@@ -1,11 +1,22 @@
 """Read-only price-target view: where SPY might go, by when, and which side
 that favors — no strike, no entry price, no stop, no position mechanics.
 
-Blends all five daily signals (pullback, trend_continuation, mean_reversion,
-momentum_breakout, vol_regime) rather than gating on pullback alone, so this
-fires more often than the trade plan. Targets/timing are ATR-scaled heuristics,
-NOT a separately backtested hit-rate like the pullback trade plan is -- said
-plainly in the caveat every time. Informational only, not a trade recommendation.
+Uses the SAME two signals validated in screener/trade_plan.py, one per
+direction, instead of an equal-weight blend of all five daily signals (most
+of which have no established edge for SPY specifically):
+
+    bullish -> pullback inside a confirmed uptrend   (2024-2026: 55% win,
+               PF 1.5 backtested on the weekly trade plan)
+    bearish -> momentum breakdown below the recent range + below the 100d
+               trend (worked independently in 2018 AND 2022: 59-60% win,
+               PF 3-5.5 -- but lost money in 2024-2026's uptrend, so a
+               bearish read fired before the broader trend actually turns
+               carries a regime_warning)
+
+Targets/timing are still ATR-scaled heuristics layered on top of a validated
+directional signal -- see research/backtest_price_target.py for the honest,
+separately-measured hit-rate of the levels themselves (not just the direction
+call). Informational only, not a trade recommendation.
 """
 from __future__ import annotations
 
@@ -23,30 +34,33 @@ from ..signals import strategies as dsig
 from .trade_plan import _market_ctx   # reuse the day-awareness helper
 
 MIN_CONFIDENCE = 0.30
-_DAILY_STRATEGIES = ("pullback", "trend_continuation", "mean_reversion",
-                    "momentum_breakout", "vol_regime")
 
 
-def _blend(dsig_daily: pd.DataFrame) -> tuple[int, float, list[str]]:
-    """Direction + confidence from whichever daily signals fire, without
-    diluting confidence by the full 5-signal universe the way a fixed-weight
-    average would (one signal firing at 55% should read as ~55%, not 11%).
-    Multiple agreeing signals get a small confidence boost.
-    """
-    rows = {n: dsig.STRATEGIES[n](dsig_daily).iloc[-1] for n in _DAILY_STRATEGIES}
-    score = sum((r["direction"] or 0) * (r["confidence"] or 0) for r in rows.values())
-    direction = 0 if score == 0 else (1 if score > 0 else -1)
-    reasons = []
-    if direction == 0:
-        return 0, 0.0, reasons
+def _blend(dsig_daily: pd.DataFrame) -> tuple[int, float, list[str], str]:
+    """Direction + confidence from the two validated signals only. Returns
+    (direction, confidence, reasons, regime_warning)."""
+    close = dsig_daily["close"]
+    sma20, sma50, sma100 = (ind.sma(close, 20).iloc[-1], ind.sma(close, 50).iloc[-1],
+                            ind.sma(close, 100).iloc[-1])
+    up_stack, dn_stack = sma20 > sma50 > sma100, sma20 < sma50 < sma100
 
-    agreeing = {n: r for n, r in rows.items() if int(r["direction"] or 0) == direction}
-    avg_conf = sum(r["confidence"] for r in agreeing.values()) / len(agreeing)
-    confidence = min(1.0, avg_conf * (1 + 0.15 * (len(agreeing) - 1)))
-    for n, r in agreeing.items():
-        reasons.append(f"{n.replace('_', ' ')} ({r['confidence']:.0%})"
-                       + (f" — {r['edge_note']}" if r["edge_note"] else ""))
-    return direction, confidence, reasons
+    pb = dsig.pullback(dsig_daily).iloc[-1]
+    mb = dsig.momentum_breakout(dsig_daily).iloc[-1]
+
+    if int(pb["direction"]) > 0 and up_stack:
+        return (1, float(pb["confidence"]),
+                [f"pullback in a confirmed uptrend ({pb['confidence']:.0%}) — "
+                 f"{pb['edge_note']}"], "")
+    if int(mb["direction"]) < 0:
+        warning = ("" if dn_stack else
+                  "⚠️ Broader trend isn't confirmed bearish yet — this exact "
+                  "bearish read lost money in similar 2024–2026 conditions "
+                  "(33% win, −6% avg). Its real edge (59–60% win) only showed "
+                  "up during confirmed bear markets (2018, 2022).")
+        return (-1, float(mb["confidence"]),
+                [f"momentum breakdown ({mb['confidence']:.0%}) — {mb['edge_note']}"],
+                warning)
+    return 0, 0.0, [], ""
 
 
 @dataclass
@@ -68,10 +82,12 @@ class PriceTargetView:
     far_window: str = "within the week (~5 sessions)"
     watch_level: float = 0.0
     reasons: list[str] = field(default_factory=list)
-    caveat: str = ("Reconstructed price. Targets/timing are ATR-scaled estimates, "
-                   "not a separately measured hit-rate (unlike the pullback trade "
-                   "plan, which is backtested). Informational only — not a trade "
-                   "recommendation.")
+    regime_warning: str = ""
+    caveat: str = ("Reconstructed price. Backtested hit-rate (2018-2026, n=149): "
+                   "near target reached first 55% of the time (median 2 sessions "
+                   "when it hits); far target 35% (median 4 sessions); the watch/"
+                   "cut level got hit FIRST 44% of the time — almost a coin flip. "
+                   "See research/backtest_price_target.py. Informational only.")
 
     @property
     def bias(self) -> str:
@@ -106,6 +122,7 @@ class PriceTargetView:
             f"·  {self.far_window}",
             f"*Watch level:* ${self.watch_level:.2f}  ({watch_pct:+.1%})   "
             f"·  a close beyond here would weaken this read",
+            *( [self.regime_warning] if self.regime_warning else [] ),
             "",
             f"*Why:* {' · '.join(self.reasons)}",
             "",
@@ -136,7 +153,8 @@ class PriceTargetView:
             {"type": "section", "fields": [
                 {"type": "mrkdwn", "text": f"*{k}*\n{v}"} for k, v in fields]},
             {"type": "section", "text": {"type": "mrkdwn",
-             "text": f"*Why:* {' · '.join(self.reasons)}"}},
+             "text": (f"{self.regime_warning}\n" if self.regime_warning else "")
+             + f"*Why:* {' · '.join(self.reasons)}"}},
             {"type": "context", "elements": [{"type": "mrkdwn", "text": self.caveat}]},
         ]
 
@@ -163,13 +181,13 @@ def build_view(interval: str = "1h", hist_start: str = "2016-01-01",
     last_daily = dsig_daily.index[-1]
     close = dsig_daily["close"]
 
-    direction, confidence, reasons = _blend(dsig_daily)
+    direction, confidence, reasons, regime_warning = _blend(dsig_daily)
 
     base = PriceTargetView(qualified=False, asof=asof, session_date=str(session_date),
                            live=live, day_note=day_note)
     if direction == 0 or confidence < MIN_CONFIDENCE:
-        base.setup = (f"Blended signal confidence is {confidence:.0%} "
-                      f"(need ≥{MIN_CONFIDENCE:.0%}) as of {last_daily.date():%a %b %d}.")
+        base.setup = (f"Neither signal is firing (confidence {confidence:.0%}, "
+                      f"need ≥{MIN_CONFIDENCE:.0%}) as of {last_daily.date():%a %b %d}.")
         return base
 
     # spot: for a live read, near-real-time if we can get it, else the last
@@ -197,4 +215,5 @@ def build_view(interval: str = "1h", hist_start: str = "2016-01-01",
     base.atr = atr
     base.near_target, base.far_target, base.watch_level = near, far, watch
     base.reasons = reasons
+    base.regime_warning = regime_warning
     return base

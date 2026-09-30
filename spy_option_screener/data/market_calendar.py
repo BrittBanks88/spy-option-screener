@@ -35,6 +35,13 @@ def next_trading_day(d: dt.date) -> dt.date:
     return d
 
 
+def prev_trading_day(d: dt.date) -> dt.date:
+    d -= dt.timedelta(days=1)
+    while not is_trading_day(d):
+        d -= dt.timedelta(days=1)
+    return d
+
+
 def next_weekly_expiry(session_date: dt.date, min_dte: int = 2,
                        max_dte: int = 9) -> tuple[dt.date, int]:
     """First tradable SPY expiration at least ``min_dte`` calendar days out.

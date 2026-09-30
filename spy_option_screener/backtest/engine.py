@@ -170,8 +170,11 @@ def run(df: pd.DataFrame, signals: pd.DataFrame, rules: TradeRules | None = None
                 pick = side.sort_values("ddist").iloc[0]
 
                 fill = pick["mid"] * (1.0 + rules.slippage_pct)
-                budget = cash * rules.risk_per_trade
-                contracts = int(budget // (fill * 100))
+                if rules.fixed_contracts is not None:
+                    contracts = rules.fixed_contracts
+                else:
+                    budget = cash * rules.risk_per_trade
+                    contracts = int(budget // (fill * 100))
                 if contracts >= 1:
                     commission = rules.commission_per_contract * contracts
                     cost = fill * 100 * contracts + commission

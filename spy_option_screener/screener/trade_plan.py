@@ -90,10 +90,12 @@ class TradePlan:
     time_stop: str = ""
     manage_date: str = ""         # "Wed Aug 26" or "Thu Aug 27 (same day)"
     overnight: str = ""           # overnight-carry assessment line
+    regime_warning: str = ""      # set on puts fired while the broader trend is still up
     data_source: str = "reconstructed"   # "polygon" | "reconstructed"
-    caveat: str = ("Reconstructed vol surface (±10–20%). The pullback signal is the "
-                   "best-behaved in backtests but still only ~breakeven on a ~2-yr "
-                   "sample. Size small. Not investment advice.")
+    caveat: str = ("Reconstructed vol surface (±10–20%). 2024–2026: 55% win rate, "
+                   "+13% avg/trade, profit factor 1.5. This SAME rule lost badly in "
+                   "2022 (11% win rate, −39% avg/trade) — it has NOT been shown to "
+                   "survive a real bear market. Size small. Not investment advice.")
 
     # ----- Slack renderers ----------------------------------------------
     def slack_text(self) -> str:
@@ -130,6 +132,7 @@ class TradePlan:
             f"*Time stop:*  {self.time_stop}",
             *( [self.overnight] if self.overnight else [] ),
             *( [f"*Heads-up:*  {self.entry_quality}"] if self.entry_quality else [] ),
+            *( [self.regime_warning] if self.regime_warning else [] ),
             "",
             f"*Risk:*  ${self.max_loss:.0f}/contract max   ·   reward:risk ≈ "
             f"{self.reward_risk:.1f} : 1 to T1   ·   breakeven ${self.breakeven:.2f}"
@@ -172,6 +175,7 @@ class TradePlan:
                 + (f"\n:warning: {self.entry_quality}" if self.entry_quality else "")
                 + f"\n*Time stop:* {self.time_stop}"
                 + (f"\n{self.overnight}" if self.overnight else "")
+                + (f"\n{self.regime_warning}" if self.regime_warning else "")
                 + "\n"
                 f"*Why:* {' · '.join(self.reasons)} (conviction {self.confidence:.0%})\n"
                 f"breakeven ${self.breakeven:.2f} · score {self.score:.0f}/100")}},
@@ -181,7 +185,7 @@ class TradePlan:
     # ----- simple / "just tell me what to do" renderers ------------------
     def _why_short(self) -> str:
         return ("dip in an uptrend, bouncing" if self.direction > 0
-                else "bounce in a downtrend, rolling over")
+                else "breakdown below range, trend confirms lower")
 
     def _simple_body(self) -> str:
         cmp = "above" if self.direction > 0 else "below"
@@ -195,6 +199,8 @@ class TradePlan:
         ]
         if self.entry_quality:
             lines.append("*NOTE* → it already ran up — smaller size, or wait for a dip")
+        if self.regime_warning:
+            lines.append(f"*LOW CONFIDENCE* → {self.regime_warning}")
         return "\n".join(lines)
 
     def slack_simple_text(self) -> str:
@@ -277,24 +283,47 @@ def build_plan(entry_time="10:00", interval="1h", buy_zone=(0.35, 0.60),
     dsig_daily = daily.loc[:pd.Timestamp(session_date)]
 
     # --- qualify the setup ---------------------------------------------
-    pb_row = dsig.pullback(dsig_daily).iloc[-1]
-    pdir = int(pb_row["direction"])
+    # Calls: pullback inside a confirmed uptrend (55% win, +13% avg/trade,
+    # PF 1.5 in 2024-2026 backtests). Puts: a DIFFERENT signal, momentum
+    # breakdown below the recent range + below the 100d trend -- the
+    # pullback signal mirrored for puts had no real edge (9 historical
+    # trades, 11% win rate). Momentum-breakdown puts worked in both 2018
+    # and 2022 independently (59-60% win, PF 3-5.5) but LOST money in the
+    # 2024-2026 uptrend (33% win, -6% avg) -- see regime_warning below.
     close = dsig_daily["close"]
     sma20, sma50, sma100 = (ind.sma(close, 20).iloc[-1], ind.sma(close, 50).iloc[-1],
                             ind.sma(close, 100).iloc[-1])
     up_stack, dn_stack = sma20 > sma50 > sma100, sma20 < sma50 < sma100
-    trend_ok = (pdir > 0 and up_stack) or (pdir < 0 and dn_stack)
     trend_note = ("uptrend: 20d > 50d > 100d" if up_stack else
                   "downtrend: 20d < 50d < 100d" if dn_stack else "no clean MA trend")
 
+    pb_row = dsig.pullback(dsig_daily).iloc[-1]
+    mb_row = dsig.momentum_breakout(dsig_daily).iloc[-1]
+    call_ok = int(pb_row["direction"]) > 0 and up_stack
+    put_ok = int(mb_row["direction"]) < 0
+
     base = TradePlan(qualified=False, asof=asof, session_date=str(session_date),
                      live=live, day_note=day_note, setup="")
+    if call_ok:
+        pdir, sig_row = 1, pb_row
+        setup_label = "Pullback inside an established trend — playing the continuation."
+        regime_warning = ""
+    elif put_ok:
+        pdir, sig_row = -1, mb_row
+        setup_label = "Momentum breakdown below the recent range — playing continuation lower."
+        regime_warning = ("" if dn_stack else
+                          "⚠️ Broader trend (20d/50d/100d) isn't confirmed bearish yet. "
+                          "This exact put setup lost money in similar conditions in "
+                          "2024–2026 (33% win, −6% avg/trade) — its real edge (59–60% "
+                          "win) only showed up during confirmed bear markets (2018, "
+                          "2022). Treat as lower-confidence until the broader trend "
+                          "actually turns.")
+    else:
+        pdir = 0
+
     if pdir == 0:
-        base.setup = f"No pullback firing. {trend_note}."
-        return base
-    if not trend_ok:
-        base.setup = (f"Pullback fired ({'calls' if pdir > 0 else 'puts'}) but the MA "
-                      f"trend doesn't confirm continuation — {trend_note}.")
+        base.setup = (f"No pullback (calls) or momentum-breakdown (puts) signal "
+                      f"firing. {trend_note}.")
         return base
 
     # --- entry price ---------------------------------------------------
@@ -380,11 +409,12 @@ def build_plan(entry_time="10:00", interval="1h", buy_zone=(0.35, 0.60),
     return TradePlan(
         qualified=True, asof=asof, session_date=str(session_date), live=live,
         day_note=day_note,
-        setup="Pullback inside an established trend — playing the continuation.",
+        setup=setup_label,
         direction=pdir, spot=u_entry, atr=atr, trend_note=trend_note,
-        reasons=[f"{pb_row['edge_note']} ({pb_row['confidence']:.0%})", trend_note,
+        reasons=[f"{sig_row['edge_note']} ({sig_row['confidence']:.0%})", trend_note,
                  f"daily ATR ≈ ${atr:.2f}"],
-        confidence=float(pb_row["confidence"]),
+        confidence=float(sig_row["confidence"]),
+        regime_warning=regime_warning,
         kind=kind, strike=strike, expiry=str(exp_date), dte=dte,
         delta=float(c["delta"]), iv=iv, theta=float(c["theta"]),
         breakeven=float(c["breakeven"]), pop=float(c["chance_of_profit"]),

@@ -13,6 +13,12 @@ class TradeRules:
     min_confidence: float = 0.15     # skip weak signals
     entry_time: str | None = None    # e.g. "10:00"; None = enter at the close
     risk_per_trade: float = 0.03     # fraction of equity spent on premium
+    fixed_contracts: int | None = None  # if set, always buy this many
+                                         # contracts (skip the trade if it
+                                         # can't be afforded) instead of
+                                         # sizing off risk_per_trade -- for
+                                         # small accounts that can only ever
+                                         # hold one contract at a time.
     max_concurrent: int = 1          # one position at a time (weekly cadence)
     slippage_pct: float = 0.05       # entry+exit haircut vs model mid (each side)
     commission_per_contract: float = 0.65

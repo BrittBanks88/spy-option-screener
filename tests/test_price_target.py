@@ -26,11 +26,24 @@ def test_backcheck_uses_that_days_close_not_live_quote():
     """Regression: spot must come from the historical close for --for, never
     today's live quote."""
     import pandas as pd
-    from spy_option_screener.data import loader
-    v = _view(for_date="2026-09-03")
+    from spy_option_screener.data import loader, intraday as it
+    from spy_option_screener.screener import price_target as pt
+
     daily = loader.load_history(start="2018-01-01")
     daily.index = pd.DatetimeIndex(daily.index)
-    hist_close = float(daily.loc["2026-09-03", "close"])
+    bars = it.load_intraday("1h")
+    istart = pd.Timestamp(bars["date"].min())
+    dates = daily.index[daily.index >= istart]
+    target = None
+    for ts in dates:
+        dirn, conf, _, _ = pt._blend(daily.loc[:ts])
+        if dirn != 0 and conf >= pt.MIN_CONFIDENCE:
+            target = ts.date()
+    if target is None:
+        pytest.skip("no qualifying session in the intraday window")
+
+    v = _view(for_date=str(target))
+    hist_close = float(daily.loc[str(target), "close"])
     assert v.spot == pytest.approx(hist_close)
     assert v.spot_estimated is False
 
