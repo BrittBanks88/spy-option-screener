@@ -40,7 +40,7 @@ from spy_option_screener.data import market_calendar as mcal
 from spy_option_screener.data import tracker_store as ts
 from spy_option_screener.screener import gap_screener as gap_mod
 
-st.set_page_config(page_title="SPY Gap Screener", layout="centered", page_icon="📊")
+st.set_page_config(page_title="SPY Gap Screener", layout="wide", page_icon="📊")
 
 ET = ZoneInfo("America/New_York")
 HIST_START = "2000-01-01"
