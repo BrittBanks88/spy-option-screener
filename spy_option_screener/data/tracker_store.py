@@ -69,9 +69,15 @@ def list_entries(ws) -> pd.DataFrame:
     return df[COLUMNS]
 
 
+PENDING_STATUSES = ("open", "watching")
+TERMINAL_STATUSES = ("hit_target", "hit_stop", "timed_out")
+
+
 def add_entry(ws, *, contract: str, entry_price: float, date_added: str,
              gap_date: str, gap_type: str, target: float, stop: float,
-             time_stop_date: str, notes: str = "") -> str:
+             time_stop_date: str, notes: str = "", status: str = "open") -> str:
+    if status not in PENDING_STATUSES:
+        raise ValueError(f"status must be one of {PENDING_STATUSES}")
     df = list_entries(ws)
     ids = pd.to_numeric(df["id"], errors="coerce").dropna()
     new_id = str(int(ids.max()) + 1) if len(ids) else "1"
@@ -79,7 +85,7 @@ def add_entry(ws, *, contract: str, entry_price: float, date_added: str,
     row.update({"id": new_id, "date_added": date_added, "contract": contract,
                "entry_price": entry_price, "gap_date": gap_date,
                "gap_type": gap_type, "target": target, "stop": stop,
-               "time_stop_date": time_stop_date, "status": "open",
+               "time_stop_date": time_stop_date, "status": status,
                "notes": notes})
     ws.append_row([row[c] for c in COLUMNS])
     return new_id
@@ -102,9 +108,10 @@ def update_exit(ws, row_id: str, exit_price: float, exit_date: str) -> None:
 
 
 def refresh_statuses(ws, daily: pd.DataFrame) -> int:
-    """Check each OPEN row against real SPY price data since it was added:
-    has it hit target, hit stop, or run past its time-stop date? Writes any
-    resolved rows back to the sheet. Returns how many were updated."""
+    """Check each pending row (open OR watching) against real SPY price data
+    since it was added: has it hit target, hit stop, or run past its
+    time-stop date? Writes any resolved rows back to the sheet. Returns how
+    many were updated."""
     df = list_entries(ws)
     if df.empty:
         return 0
@@ -114,7 +121,7 @@ def refresh_statuses(ws, daily: pd.DataFrame) -> int:
     updated = 0
 
     for i, row in df.iterrows():
-        if row["status"] != "open":
+        if row["status"] not in PENDING_STATUSES:
             continue
         try:
             entry_date = pd.Timestamp(row["date_added"])

@@ -9,6 +9,11 @@ data/tracker_store.py:refresh_statuses).
     python add_tracked_alert.py --contract "SPY $765 CALL exp 2026-10-03" \\
         --entry-price 4.25 --date-added 2026-09-30
 
+    # watchlist only -- no money committed, entry-price is just a reference
+    # quote (e.g. the mark price at the time), not a fill
+    python add_tracked_alert.py --contract "SPY $771 CALL exp 2026-10-16" \\
+        --entry-price 5.21 --watching
+
     python add_tracked_alert.py --exit ID --exit-price 6.10 --exit-date 2026-10-05
 """
 from __future__ import annotations
@@ -26,6 +31,9 @@ def main():
     ap.add_argument("--entry-price", type=float)
     ap.add_argument("--date-added", default=dt.date.today().isoformat())
     ap.add_argument("--notes", default="")
+    ap.add_argument("--watching", action="store_true",
+                    help="watchlist only, not a real position -- entry-price "
+                         "is a reference quote, not a fill")
     ap.add_argument("--for", dest="for_date", default=None,
                     help="use the gap signal as of this date instead of today")
     ap.add_argument("--exit", dest="exit_id", help="row id to close out")
@@ -52,13 +60,14 @@ def main():
               f"({view.setup}). Nothing added.")
         return
 
+    status = "watching" if args.watching else "open"
     new_id = ts.add_entry(
         ws, contract=args.contract, entry_price=args.entry_price,
         date_added=args.date_added, gap_date=view.gap_date,
         gap_type=view.gap_type, target=view.target, stop=view.stop,
-        time_stop_date=view.time_stop_date, notes=args.notes,
+        time_stop_date=view.time_stop_date, notes=args.notes, status=status,
     )
-    print(f"added id {new_id}: {args.contract} @ ${args.entry_price:.2f}  ·  "
+    print(f"added id {new_id} [{status}]: {args.contract} @ ${args.entry_price:.2f}  ·  "
           f"target ${view.target:.2f}  ·  stop ${view.stop:.2f}  ·  "
           f"time stop {view.time_stop_date}")
 

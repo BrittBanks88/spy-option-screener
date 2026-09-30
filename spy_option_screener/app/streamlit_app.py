@@ -152,14 +152,15 @@ with tab_tracker:
     if df.empty:
         st.info("Nothing tracked yet.")
     else:
-        resolved = df[df["status"] != "open"]
+        resolved = df[~df["status"].isin(ts.PENDING_STATUSES)]
         n_res = len(resolved)
         if n_res:
             hit = (resolved["status"] == "hit_target").sum()
             st.metric("Screener accuracy (resolved signals)",
                       f"{hit}/{n_res} hit target ({hit/n_res:.0%})")
 
-        badge = {"open": "🟡 open", "hit_target": "🟢 hit target",
+        badge = {"open": "🟡 open", "watching": "👀 watching",
+                 "hit_target": "🟢 hit target",
                  "hit_stop": "🔴 hit stop", "timed_out": "⚪ timed out"}
         show = df.copy()
         show["status"] = show["status"].map(lambda s: badge.get(s, s))
