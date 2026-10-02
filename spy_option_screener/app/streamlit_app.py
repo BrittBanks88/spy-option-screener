@@ -35,6 +35,25 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+# Streamlit re-runs this script after a code change but keeps modules it has
+# already imported, so edits to the package (loader, tracker, ...) were ignored
+# until the server restarted -- the deployed app once crashed on a stale
+# loader. When the package's files change, drop its modules once so the next
+# import is current. (Only on change: swapping modules on every run races with
+# other open sessions that are mid-import.)
+@st.cache_resource
+def _code_version() -> dict:
+    return {"sig": None}
+
+
+_sig = max(f.stat().st_mtime_ns for f in (_ROOT / "spy_option_screener").rglob("*.py"))
+_ver = _code_version()
+if _ver["sig"] != _sig:
+    for _m in [m for m in sys.modules
+               if m == "spy_option_screener" or m.startswith("spy_option_screener.")]:
+        del sys.modules[_m]
+    _ver["sig"] = _sig
+
 from spy_option_screener import _env
 _env.load()   # pick up SLACK_WEBHOOK_URL / POLYGON_API_KEY from .env
 
@@ -74,7 +93,7 @@ def history_up_to_date() -> pd.DataFrame:
     return hist
 
 
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_resource(ttl=45, show_spinner=False)
 def get_view():
     return gap_mod.build_view(hist_start=HIST_START)
 
