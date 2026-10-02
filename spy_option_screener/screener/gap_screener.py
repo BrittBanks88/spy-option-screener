@@ -30,6 +30,7 @@ import pandas as pd
 from ..data import loader
 from ..data import market_calendar as mcal
 from ..signals import indicators as ind
+from ..signals.gaps import first_resolution
 
 ET = ZoneInfo("America/New_York")
 MIN_GAP_PCT = 0.0015     # ~0.15% -- filters noise, matches research/backtest_gaps.py
@@ -135,19 +136,27 @@ def build_view(hist_start: str = "2000-01-01", refresh: bool = False,
               for_date: str | dt.date | None = None) -> GapSignal:
     daily = loader.load_history(start=hist_start, refresh=refresh)
     daily.index = pd.DatetimeIndex(daily.index)
+    if for_date is None:
+        # live view: include today's in-progress bar so a gap that forms at the
+        # open, or a target/stop touched this session, shows up right away
+        daily = loader.with_live_bar(daily)
     atr14 = ind.atr(daily["high"], daily["low"], daily["close"], 14)
 
     now = dt.datetime.now(ET)
     session_date = (pd.Timestamp(for_date).date() if for_date is not None
                     else daily.index[-1].date())
     asof = now.strftime("%Y-%m-%d %H:%M %Z")
+    in_progress = (for_date is None and session_date == now.date()
+                   and now.time() < loader.SESSION_FINAL_TIME)
     day_note = (f"As of {session_date:%a %b %d} close" if for_date is not None
+                else f"live · {session_date:%a %b %d}" if in_progress
                 else f"as of {daily.index[-1]:%a %b %d} close")
 
     idx = daily.index.get_loc(pd.Timestamp(session_date))
     prior_close = daily["close"].shift(1)
 
     # look back up to TIME_STOP_DAYS for the most recent still-open gap
+    last_resolved = None
     for lookback in range(0, TIME_STOP_DAYS + 1):
         i = idx - lookback
         if i < 1:
@@ -161,16 +170,14 @@ def build_view(hist_start: str = "2000-01-01", refresh: bool = False,
         atr = float(atr14.iloc[i - 1])
         stop = gap_open + direction * STOP_ATR_MULT * atr
 
-        # has it already filled, or hit its stop, between the gap day and today?
-        path = daily.iloc[i:idx + 1]
-        filled = ((path["low"] <= target).any() if direction > 0
-                 else (path["high"] >= target).any())
-        stopped = ((path["high"] >= stop).any() if direction > 0
-                  else (path["low"] <= stop).any())
-        if filled or stopped:
+        # has it already filled, or hit its stop, between the gap day and now?
+        outcome, res_ts = first_resolution(daily.iloc[i:idx + 1], direction,
+                                           target, stop)
+        if outcome is not None:
+            if last_resolved is None:      # newest resolved gap, for the message
+                last_resolved = (daily.index[i].date(), direction, outcome,
+                                 res_ts.date(), target, stop)
             continue   # this gap already resolved -- keep looking further back
-        if lookback > TIME_STOP_DAYS:
-            continue
 
         gap_date = daily.index[i].date()
         days_elapsed = idx - i
@@ -194,6 +201,12 @@ def build_view(hist_start: str = "2000-01-01", refresh: bool = False,
             historical_fill_rate=_fill_rate_for(gap_pct, direction),
         )
 
-    return GapSignal(qualified=False, asof=asof, day_note=day_note,
-                     setup="No qualifying gap (>=0.15%) is currently open "
-                           "within the last 14 trading days.")
+    setup = ("No qualifying gap (>=0.15%) is currently open within the last "
+             "14 trading days.")
+    if last_resolved:
+        g_date, g_dir, g_outcome, r_date, g_target, g_stop = last_resolved
+        what = (f"target ${g_target:.2f} reached" if g_outcome == "target"
+                else f"stop ${g_stop:.2f} hit")
+        setup += (f" Most recent gap: {'UP' if g_dir > 0 else 'DOWN'} on "
+                  f"{g_date} — {what} on {r_date}.")
+    return GapSignal(qualified=False, asof=asof, day_note=day_note, setup=setup)

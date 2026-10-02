@@ -15,6 +15,8 @@ data/tracker_store.py:refresh_statuses).
         --entry-price 5.21 --watching
 
     python add_tracked_alert.py --exit ID --exit-price 6.10 --exit-date 2026-10-05
+    # --entry-price here corrects the cost basis to the broker's own figure
+    # before P&L is computed; --notes replaces the row's notes
 """
 from __future__ import annotations
 
@@ -47,7 +49,9 @@ def main():
     if args.exit_id:
         if args.exit_price is None:
             ap.error("--exit requires --exit-price")
-        ts.update_exit(ws, args.exit_id, args.exit_price, args.exit_date)
+        ts.update_exit(ws, args.exit_id, args.exit_price, args.exit_date,
+                       entry_price=args.entry_price,
+                       notes=args.notes or None)
         print(f"closed id {args.exit_id} at ${args.exit_price:.2f} on {args.exit_date}")
         return
 

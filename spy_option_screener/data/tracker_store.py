@@ -15,13 +15,15 @@ import gspread
 import pandas as pd
 from google.oauth2.service_account import Credentials
 
+from ..signals.gaps import first_resolution
+
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
           "https://www.googleapis.com/auth/drive"]
 WORKSHEET_NAME = "Tracked Alerts"
 COLUMNS = ["id", "date_added", "contract", "entry_price", "gap_date",
            "gap_type", "target", "stop", "time_stop_date", "status",
            "resolution_date", "resolution_spy_price", "exit_price",
-           "pnl_dollars", "pnl_pct", "notes"]
+           "pnl_dollars", "pnl_pct", "notes", "exit_date"]
 
 
 # ---- credential / connection helpers --------------------------------------
@@ -73,6 +75,26 @@ PENDING_STATUSES = ("open", "watching")
 TERMINAL_STATUSES = ("hit_target", "hit_stop", "timed_out")
 
 
+def trade_result(exit_price, pnl_dollars) -> str | None:
+    """'win' / 'loss' / 'flat' for a sold position, None if not sold yet.
+    Judged on the user's real P&L only -- independent of the screener's
+    signal status (which is what the accuracy score is built from)."""
+    ex = pd.to_numeric(exit_price, errors="coerce")
+    pnl = pd.to_numeric(pnl_dollars, errors="coerce")
+    if pd.isna(ex) or pd.isna(pnl):
+        return None
+    return "win" if pnl > 0 else "loss" if pnl < 0 else "flat"
+
+
+def signal_accuracy(df: pd.DataFrame) -> tuple[int, int]:
+    """(signals that hit target, resolved signals) -- counted per DISTINCT gap
+    signal, not per row. Two contracts tracking the same gap are one signal;
+    counting rows would double-weight it and inflate the score."""
+    resolved = df[~df["status"].isin(PENDING_STATUSES)]
+    signals = resolved.drop_duplicates(subset=["gap_date", "gap_type"])
+    return int((signals["status"] == "hit_target").sum()), len(signals)
+
+
 def add_entry(ws, *, contract: str, entry_price: float, date_added: str,
              gap_date: str, gap_type: str, target: float, stop: float,
              time_stop_date: str, notes: str = "", status: str = "open") -> str:
@@ -91,20 +113,29 @@ def add_entry(ws, *, contract: str, entry_price: float, date_added: str,
     return new_id
 
 
-def update_exit(ws, row_id: str, exit_price: float, exit_date: str) -> None:
+def update_exit(ws, row_id: str, exit_price: float, exit_date: str,
+               entry_price: float | None = None, notes: str | None = None) -> None:
+    """Record a sale. exit_date goes in its own column -- it is NOT the
+    signal's resolution date (that's set only by refresh_statuses from real
+    price data), so selling early never overwrites when the signal resolved.
+    Pass entry_price to correct the cost basis to the broker's own figure
+    before P&L is computed."""
     df = list_entries(ws)
     idx = df.index[df["id"].astype(str) == str(row_id)]
     if len(idx) == 0:
         raise ValueError(f"no tracked entry with id {row_id}")
     i = int(idx[0])
-    entry_price = float(df.loc[i, "entry_price"])
-    pnl_dollars = (exit_price - entry_price) * 100
-    pnl_pct = (exit_price / entry_price - 1.0) if entry_price else 0.0
     sheet_row = i + 2  # +1 for header, +1 for 1-indexing
+    if entry_price is not None:
+        ws.update(f"D{sheet_row}", [[entry_price]])
+    else:
+        entry_price = float(df.loc[i, "entry_price"])
+    pnl_dollars = round((exit_price - entry_price) * 100, 2)
+    pnl_pct = round(exit_price / entry_price - 1.0, 6) if entry_price else 0.0
     ws.update(f"M{sheet_row}:O{sheet_row}", [[exit_price, pnl_dollars, pnl_pct]])
-    if not str(df.loc[i, "resolution_date"]).strip():
-        ws.update(f"K{sheet_row}:L{sheet_row}",
-                 [[exit_date, float(df.loc[i, "resolution_spy_price"] or 0) or ""]])
+    ws.update(f"Q{sheet_row}", [[exit_date]])
+    if notes is not None:
+        ws.update(f"P{sheet_row}", [[notes]])
 
 
 def refresh_statuses(ws, daily: pd.DataFrame) -> int:
@@ -133,16 +164,12 @@ def refresh_statuses(ws, daily: pd.DataFrame) -> int:
         if path.empty:
             continue
 
+        # same rule as the live screener and the backtest (see signals/gaps.py)
+        outcome, res_ts = first_resolution(path, 1 if gap_up else -1, target, stop)
         status, res_date, res_px = None, None, None
-        for d, bar in path.iterrows():
-            hit_target = (bar["low"] <= target) if gap_up else (bar["high"] >= target)
-            hit_stop = (bar["high"] >= stop) if gap_up else (bar["low"] <= stop)
-            if hit_target:
-                status, res_date, res_px = "hit_target", d, bar["close"]
-                break
-            if hit_stop:
-                status, res_date, res_px = "hit_stop", d, bar["close"]
-                break
+        if outcome is not None:
+            status = "hit_target" if outcome == "target" else "hit_stop"
+            res_date, res_px = res_ts, path.loc[res_ts, "close"]
         if status is None:
             time_stop = pd.Timestamp(row["time_stop_date"])
             if today > time_stop:
