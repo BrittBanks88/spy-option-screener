@@ -127,6 +127,61 @@ def spy_header(now_et: dt.datetime) -> tuple[float, str]:
                         f"next session {nxt:%a %b %d}")
 
 
+PREVIEW_PROFIT_PCT, PREVIEW_LOSS_PCT = 0.45, 0.50
+HOLD_DAYS = {"~1 week": 7, "~2 weeks": 14, "~1 month": 30}
+
+
+def render_contract_picker(view) -> None:
+    """LAYOUT PREVIEW. The controls respond, but every dollar figure is a
+    placeholder (a flat +45% / -50% of the budget midpoint). Nothing sits
+    behind this yet -- no option-chain feed -- so it is not a real quote or a
+    real recommendation, and the page says so."""
+    with st.container(border=True):
+        with st.container(horizontal=True, vertical_alignment="center"):
+            st.subheader(":material/tune: Pick a contract")
+            st.badge("Preview · not live yet", icon=":material/construction:",
+                     color="orange")
+        st.caption("Tell us what you'd realistically spend on one contract and "
+                   "we'll suggest one that fits this alert, with what you could "
+                   "make or lose.")
+
+        c1, c2 = st.columns([3, 2])
+        lo, hi = c1.slider("What would you spend on one contract?",
+                           min_value=100, max_value=1500, value=(300, 700),
+                           step=50, format="$%d", key="pick_budget")
+        hold = c2.segmented_control("How long to hold", list(HOLD_DAYS),
+                                    default="~2 weeks", key="pick_hold") or "~2 weeks"
+
+        days = HOLD_DAYS[hold]
+        expiry, _ = mcal.next_weekly_expiry(dt.date.today(), min_dte=days,
+                                            max_dte=days + 5)
+        cost = int(round((lo + hi) / 2 / 5) * 5)
+        profit, loss = round(cost * PREVIEW_PROFIT_PCT), round(cost * PREVIEW_LOSS_PCT)
+
+        if view.qualified:
+            side = "PUT" if view.gap_type == "up" else "CALL"
+            where = f"\\${round(view.target):d}"
+            levels = (f"SPY target \\${view.target:.2f} · stop \\${view.stop:.2f}")
+        else:
+            side, where = "CALL or PUT", "near the target"
+            levels = "No alert is live, so this is just an example of the layout."
+
+        st.space("small")
+        st.markdown(f"**Suggested contract** &nbsp; SPY {where} {side} · "
+                    f"exp {expiry:%b %d}")
+        st.caption(levels)
+        m1, m2, m3 = st.columns(3)
+        m1.metric("You pay", f"${cost:,}", help="Per contract (100 shares)")
+        m2.metric("If SPY reaches the target", f"+${profit:,}",
+                  f"+{PREVIEW_PROFIT_PCT:.0%}")
+        m3.metric("If SPY hits the stop", f"-${loss:,}",
+                  f"-{PREVIEW_LOSS_PCT:.0%}")
+        st.caption("Placeholder numbers, shown only to preview the layout. "
+                   "They are not calculated from real option prices yet. "
+                   "Options can lose their full cost; the stop is where you'd "
+                   "choose to exit, not a guarantee.")
+
+
 def render_signal() -> None:
     try:
         view = get_view()
@@ -157,6 +212,8 @@ def render_signal() -> None:
 
         st.caption(f"historical fill rate for this type of gap: "
                    f"**{view.historical_fill_rate:.0%}** within 14 trading days")
+
+    render_contract_picker(view)
 
     st.divider()
     st.caption(view.caveat)
