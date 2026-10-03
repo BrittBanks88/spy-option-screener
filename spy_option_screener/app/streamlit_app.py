@@ -58,8 +58,10 @@ from spy_option_screener import _env
 _env.load()   # pick up SLACK_WEBHOOK_URL / POLYGON_API_KEY from .env
 
 from spy_option_screener.data import loader
+from spy_option_screener.data import fake_chain as fake_chain_mod
 from spy_option_screener.data import market_calendar as mcal
 from spy_option_screener.data import tracker_store as ts
+from spy_option_screener.screener import contract_picker as picker_mod
 from spy_option_screener.screener import gap_screener as gap_mod
 
 st.set_page_config(page_title="SPY Gap Screener", layout="wide", page_icon="📊")
@@ -127,62 +129,101 @@ def spy_header(now_et: dt.datetime) -> tuple[float, str]:
                         f"next session {nxt:%a %b %d}")
 
 
-PREVIEW_PROFIT_PCT, PREVIEW_LOSS_PCT = 0.45, 0.50
 HOLD_DAYS = {"~1 week": 7, "~2 weeks": 14, "~1 month": 30}
+# Typical alert size, used only to draw the example when no alert is live.
+EXAMPLE_TARGET_PCT, EXAMPLE_STOP_PCT = 0.007, 0.019
 
 
-def render_contract_picker(view) -> None:
-    """LAYOUT PREVIEW. The controls respond, but every dollar figure is a
-    placeholder (a flat +45% / -50% of the budget midpoint). Nothing sits
-    behind this yet -- no option-chain feed -- so it is not a real quote or a
-    real recommendation, and the page says so."""
+def money(x: float, markdown: bool = False) -> str:
+    """+$204 / -$67. In markdown text the $ must be escaped or Streamlit treats
+    a pair of them as math."""
+    sign = "+" if x > 0 else "-" if x < 0 else ""
+    return f"{sign}{chr(92) + '$' if markdown else '$'}{abs(x):,.0f}"
+
+
+@st.cache_resource(ttl=300, show_spinner=False)
+def get_chain(spot_rounded: float, today_iso: str):
+    """FAKE chain (data/fake_chain.py) until a live feed is connected."""
+    return fake_chain_mod.fake_chain(spot_rounded, today=dt.date.fromisoformat(today_iso))
+
+
+def render_contract_picker(view, spot: float) -> None:
+    """Contract picker, running on a FAKE option chain. The selection and the
+    profit/loss scenarios come from screener/contract_picker.suggest_contract
+    (real, tested logic), but the prices feeding it are model output, not
+    quotes -- so the card shows the SHAPE of the risk and reward, and says so.
+
+    To go live: swap get_chain() for a vendor-backed chain in the same schema.
+    See HANDOFF_CONTRACT_PICKER.md."""
     with st.container(border=True):
         with st.container(horizontal=True, vertical_alignment="center"):
             st.subheader(":material/tune: Pick a contract")
-            st.badge("Preview · not live yet", icon=":material/construction:",
+            st.badge("Preview · fake prices", icon=":material/construction:",
                      color="orange")
         st.caption("Tell us what you'd realistically spend on one contract and "
                    "we'll suggest one that fits this alert, with what you could "
-                   "make or lose.")
+                   "make or lose. Real option prices aren't connected yet, so the "
+                   "dollar amounts show the shape of the risk and reward, not "
+                   "what you'd actually pay.")
 
         c1, c2 = st.columns([3, 2])
         lo, hi = c1.slider("What would you spend on one contract?",
-                           min_value=100, max_value=1500, value=(300, 700),
+                           min_value=100, max_value=2000, value=(400, 1000),
                            step=50, format="$%d", key="pick_budget")
         hold = c2.segmented_control("How long to hold", list(HOLD_DAYS),
                                     default="~2 weeks", key="pick_hold") or "~2 weeks"
 
-        days = HOLD_DAYS[hold]
-        expiry, _ = mcal.next_weekly_expiry(dt.date.today(), min_dte=days,
-                                            max_dte=days + 5)
-        cost = int(round((lo + hi) / 2 / 5) * 5)
-        profit, loss = round(cost * PREVIEW_PROFIT_PCT), round(cost * PREVIEW_LOSS_PCT)
-
         if view.qualified:
-            side = "PUT" if view.gap_type == "up" else "CALL"
-            where = f"\\${round(view.target):d}"
-            levels = (f"SPY target \\${view.target:.2f} · stop \\${view.stop:.2f}")
+            gap_type, target, stop, basis = view.gap_type, view.target, view.stop, spot
+            example_note = ""
         else:
-            side, where = "CALL or PUT", "near the target"
-            levels = "No alert is live, so this is just an example of the layout."
+            gap_type, basis = "up", spot
+            target, stop = spot * (1 - EXAMPLE_TARGET_PCT), spot * (1 + EXAMPLE_STOP_PCT)
+            example_note = ("No alert is live, so this uses typical alert levels "
+                            "just to show the layout.")
+
+        chain = get_chain(round(basis), dt.date.today().isoformat())
+        result = picker_mod.suggest_contract(
+            chain, gap_type=gap_type, spot=basis, target=target, stop=stop,
+            budget=(lo, hi), hold_days=HOLD_DAYS[hold])
 
         st.space("small")
-        st.markdown(f"**Suggested contract** &nbsp; SPY {where} {side} · "
-                    f"exp {expiry:%b %d}")
-        st.caption(levels)
+        if result.suggestion is None:
+            st.info(f"No suggestion in this range. {result.reason}".replace("$", chr(92) + "$"),
+                    icon=":material/search_off:")
+            return
+
+        s = result.suggestion
+        st.markdown(f"**Suggested contract** &nbsp; SPY \\${s.strike:.0f} "
+                    f"{s.kind.upper()} · exp {s.expiry:%b %d}")
+        st.caption(f"SPY target \\${target:.2f} · stop \\${stop:.2f}"
+                   + (f" · {example_note}" if example_note else ""))
         m1, m2, m3 = st.columns(3)
-        m1.metric("You pay", f"${cost:,}", help="Per contract (100 shares)")
-        m2.metric("If SPY reaches the target", f"+${profit:,}",
-                  f"+{PREVIEW_PROFIT_PCT:.0%}")
-        m3.metric("If SPY hits the stop", f"-${loss:,}",
-                  f"-{PREVIEW_LOSS_PCT:.0%}")
-        st.caption("Placeholder numbers, shown only to preview the layout. "
-                   "They are not calculated from real option prices yet. "
-                   "Options can lose their full cost; the stop is where you'd "
-                   "choose to exit, not a guarantee.")
+        about = f"Modeled, if it gets there in about {s.headline.days_to_hit} days"
+        m1.metric("You pay", money(s.cost).lstrip("+"), help="Per contract: the ask × 100")
+        m2.metric("If SPY reaches the target", money(s.headline.profit_at_target),
+                  f"{s.profit_pct:+.0%}", help=about)
+        m3.metric("If SPY hits the stop", money(s.headline.loss_at_stop),
+                  f"{s.loss_pct:+.0%}", help=about)
+
+        first, last = s.scenarios[0], s.scenarios[-1]
+        st.caption(f"Timing matters: the profit at the target ranges from "
+                   f"{money(first.profit_at_target, True)} if it gets there in "
+                   f"{first.days_to_hit} day to {money(last.profit_at_target, True)} "
+                   f"if it takes {last.days_to_hit} days (time decay). The figures "
+                   f"above assume about {s.headline.days_to_hit} days.")
+        with st.expander("See the timing scenarios"):
+            st.dataframe(
+                [{"Takes about": f"{x.days_to_hit} day" + ("s" if x.days_to_hit > 1 else ""),
+                  "Profit at target": money(x.profit_at_target),
+                  "Loss at stop": money(x.loss_at_stop)} for x in s.scenarios],
+                hide_index=True, width="content")
+        st.caption("\n".join(f"- {w}" for w in s.warnings)
+                   + "\n- Options can lose their full cost; the stop is where "
+                     "you'd choose to exit, not a guarantee.")
 
 
-def render_signal() -> None:
+def render_signal(spot: float) -> None:
     try:
         view = get_view()
     except Exception as e:  # noqa: BLE001
@@ -213,7 +254,7 @@ def render_signal() -> None:
         st.caption(f"historical fill rate for this type of gap: "
                    f"**{view.historical_fill_rate:.0%}** within 14 trading days")
 
-    render_contract_picker(view)
+    render_contract_picker(view, spot)
 
     st.divider()
     st.caption(view.caveat)
@@ -304,7 +345,7 @@ def live_page() -> None:
 
     tab_signal, tab_tracker = st.tabs(["📊 Signal", "📋 Tracker"])
     with tab_signal:
-        render_signal()
+        render_signal(spot)
     with tab_tracker:
         render_tracker()
 
